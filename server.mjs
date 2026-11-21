@@ -5,6 +5,8 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { Indice } from './src/retrieval.mjs';
 import { montarPrompt } from './src/prompt.proposta.mjs';
+import { criarTelegram } from './src/telegram.mjs';
+import { auditar } from './src/auditoria.mjs';
 
 const PORT = Number(process.env.PORT || 3200);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -16,6 +18,7 @@ const DATA_DIR = process.env.DATA_DIR || './data';
 const CONV_DIR = path.join(DATA_DIR, 'conversas');
 const MAX_HIST = Number(process.env.JARVIS_MAX_HISTORICO || 12);
 const TIMEOUT_MS = Number(process.env.JARVIS_TIMEOUT_MS || 180000);
+const INICIO = Date.now();
 const PUBLIC = path.join(path.dirname(new URL(import.meta.url).pathname), 'public');
 
 const indice = new Indice(VAULT_DIR);
@@ -64,15 +67,8 @@ async function estatico(res, p) {
   } catch { json(res, 404, { erro: 'não encontrado' }); }
 }
 
-async function chat(req, res) {
-  const b = await corpo(req);
-  const texto = String(b.mensagem || '').trim();
-  if (!texto) return json(res, 400, { erro: 'mensagem vazia' });
-  if (texto.length > 8000) return json(res, 400, { erro: 'mensagem longa demais (máx. 8000 caracteres)' });
-
-  let conv;
-  if (idValido(b.conversaId)) { try { conv = await lerConv(b.conversaId); } catch {} }
-  if (!conv) conv = { id: randomUUID(), titulo: texto.slice(0, 60), criado: new Date().toISOString(), mensagens: [] };
+// Núcleo compartilhado (web e Telegram): busca no vault + Ollama Cloud. Sem fallback.
+async function perguntar(conv, texto, { onDelta = () => {}, onPensando = () => {}, signal } = {}) {
   conv.mensagens.push({ role: 'user', content: texto, ts: new Date().toISOString() });
   conv.atualizado = new Date().toISOString();
   await salvarConv(conv);
@@ -84,13 +80,9 @@ async function chat(req, res) {
   const historico = conv.mensagens.filter(m => !m.erro && m.content).slice(-MAX_HIST).map(({ role, content }) => ({ role, content }));
   const mensagens = [{ role: 'system', content: montarPrompt(trechos, agoraAcre()) }, ...historico];
 
-  res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store', 'x-accel-buffering': 'no' });
-  const enviar = o => res.write(JSON.stringify(o) + '\n');
-  enviar({ tipo: 'inicio', conversaId: conv.id, modelo: MODEL, fontes });
-
   const ctrl = new AbortController();
   let timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
-  res.on('close', () => { if (!res.writableEnded) ctrl.abort(); });
+  signal?.addEventListener('abort', () => ctrl.abort());
   let resposta = '', erro = null, pensou = false;
   try {
     if (!API_KEY) throw new Error('OLLAMA_API_KEY não configurada no .env do JARVIS.');
@@ -113,8 +105,8 @@ async function chat(req, res) {
         if (!linha) continue;
         const j = JSON.parse(linha);
         if (j.error) throw new Error(`Ollama Cloud: ${j.error}`);
-        if (j.message?.thinking && !pensou) { pensou = true; enviar({ tipo: 'pensando' }); }
-        if (j.message?.content) { resposta += j.message.content; enviar({ tipo: 'delta', texto: j.message.content }); }
+        if (j.message?.thinking && !pensou) { pensou = true; onPensando(); }
+        if (j.message?.content) { resposta += j.message.content; onDelta(j.message.content); }
       }
       clearTimeout(timer); timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
     }
@@ -127,6 +119,32 @@ async function chat(req, res) {
   conv.mensagens.push({ role: 'assistant', content: resposta, ts: new Date().toISOString(), modelo: MODEL, fontes, ...(erro ? { erro } : {}) });
   conv.atualizado = new Date().toISOString();
   await salvarConv(conv);
+  return { resposta, fontes, erro };
+}
+
+const novaConv = (titulo, extra = {}) => ({ id: randomUUID(), titulo: titulo.slice(0, 60), criado: new Date().toISOString(), atualizado: new Date().toISOString(), mensagens: [], ...extra });
+
+async function chat(req, res) {
+  const b = await corpo(req);
+  const texto = String(b.mensagem || '').trim();
+  if (!texto) return json(res, 400, { erro: 'mensagem vazia' });
+  if (texto.length > 8000) return json(res, 400, { erro: 'mensagem longa demais (máx. 8000 caracteres)' });
+
+  let conv;
+  if (idValido(b.conversaId)) { try { conv = await lerConv(b.conversaId); } catch {} }
+  if (!conv) conv = novaConv(texto);
+
+  res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store', 'x-accel-buffering': 'no' });
+  const enviar = o => res.write(JSON.stringify(o) + '\n');
+  const ctrl = new AbortController();
+  res.on('close', () => { if (!res.writableEnded) ctrl.abort(); });
+  enviar({ tipo: 'inicio', conversaId: conv.id, modelo: MODEL, fontes: [] });
+  const { fontes, erro } = await perguntar(conv, texto, {
+    signal: ctrl.signal,
+    onPensando: () => enviar({ tipo: 'pensando' }),
+    onDelta: t => enviar({ tipo: 'delta', texto: t }),
+  });
+  enviar({ tipo: 'fontes', fontes });
   if (erro) enviar({ tipo: 'erro', mensagem: erro });
   enviar({ tipo: 'fim' });
   res.end();
@@ -154,5 +172,11 @@ const server = http.createServer(async (req, res) => {
     if (!res.headersSent) json(res, 500, { erro: e.message }); else res.end();
   }
 });
-server.listen(PORT, HOST, () => console.log(`[jarvis] v0.1 ouvindo em ${HOST}:${PORT} · modelo ${MODEL} via ${OLLAMA_URL}`));
-for (const s of ['SIGTERM', 'SIGINT']) process.on(s, () => server.close(() => process.exit(0)));
+server.listen(PORT, HOST, () => console.log(`[jarvis] ouvindo em ${HOST}:${PORT} · modelo ${MODEL} via ${OLLAMA_URL}`));
+const telegram = criarTelegram({
+  token: process.env.TELEGRAM_BOT_TOKEN, chatPermitido: process.env.TELEGRAM_ALLOWED_CHAT_ID, dataDir: DATA_DIR,
+  perguntar, lerConv, novaConv, auditar: e => auditar(DATA_DIR, e),
+  status: () => ({ uptimeS: Math.round((Date.now() - INICIO) / 1000), modelo: MODEL, notas: indice.notas, trechos: indice.chunks.length, indexado: indice.atualizado }),
+});
+telegram?.iniciar();
+for (const s of ['SIGTERM', 'SIGINT']) process.on(s, () => { telegram?.parar(); server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 3000).unref(); });

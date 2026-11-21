@@ -13,6 +13,8 @@ services:
       OLLAMA_API_KEY: ${OLLAMA_API_KEY:?defina OLLAMA_API_KEY no .env}
       OLLAMA_URL: ${OLLAMA_URL:-https://ollama.com}
       JARVIS_MODEL: ${JARVIS_MODEL:-glm-5.3-flash}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_ALLOWED_CHAT_ID: ${TELEGRAM_ALLOWED_CHAT_ID:-}
       HOST: 0.0.0.0
       PORT: "3200"
       VAULT_DIR: /app/vault

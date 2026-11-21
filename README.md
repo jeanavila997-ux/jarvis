@@ -17,6 +17,8 @@ Não tem ferramentas: não executa comandos, não envia mensagens, não apaga na
 | Prompt de sistema (**rascunho**) + perfil fixo do Jean | `src/prompt.mjs` |
 | Interface de chat (pt-BR, celular, tema escuro neon ciano) | `public/` |
 | Conversas salvas em JSON | `data/conversas/*.json` |
+| Canal Telegram + botão de "sim" | `src/telegram.mjs`, `src/confirmacoes.mjs` |
+| Auditoria (nível 1+, chats negados) | `src/auditoria.mjs` → `data/auditoria.jsonl` |
 | Cópia do vault (só leitura no container) | `vault/` |
 
 A cada pergunta, o servidor busca os trechos mais relevantes do vault (pergunta atual + anterior),
@@ -41,6 +43,16 @@ Saúde (dentro da VPS): `docker compose exec jarvis wget -qO- http://127.0.0.1:3
 Edite `JARVIS_MODEL` no `.env` (ex.: `kimi-k2.6`, `deepseek-v4.1-flash` — ver `https://ollama.com/api/tags`) e rode `docker compose up -d`.
 Só use modelos que estão dentro da assinatura. O JARVIS nunca troca de modelo sozinho.
 
+## Telegram (@Agenteejarvis_bot)
+- Long polling (`getUpdates`) dentro do mesmo serviço (`src/telegram.mjs`). Mesmo cérebro do chat web: busca no vault, prompt ativo e Ollama Cloud, sem fallback.
+- **Só responde ao chat do Jean** (`TELEGRAM_ALLOWED_CHAT_ID`). Outros chats recebem uma linha ("Este assistente é privado.", no máximo a cada 6 h) e ficam registrados em `data/auditoria.jsonl`, sem o conteúdo.
+- Uma conversa por chat (`data/telegram/chats.json` aponta para `data/conversas/`). As conversas do Telegram aparecem no chat web com o prefixo `[Telegram]`.
+- Resposta em texto puro, dividida em partes de até 4000 caracteres, com "digitando…" enquanto espera e as notas `[[...]]` no fim.
+- Comandos: `/start`, `/nova` (conversa nova), `/status` (no ar há quanto tempo, modelo, notas do vault), `/parar` (cancela confirmações pendentes), `/testesim` (mostra o botão de "sim" sem executar nada).
+- Confirmação de nível 2 (`src/confirmacoes.mjs`): botões Confirmar/Cancelar, só do chat do Jean, expira em 10 min, uso único. Nível 3 é sempre recusado. **Nenhuma ação real está ligada ainda.**
+- Variáveis no `.env`: `TELEGRAM_BOT_TOKEN` e `TELEGRAM_ALLOWED_CHAT_ID`. Sem elas, o canal fica desligado. O token do Hermes é outro, e os dois não podem usar o mesmo bot (daria erro 409).
+- Logs: `docker compose logs -f jarvis | grep telegram`
+
 ## Segurança
 - Container sem portas publicadas, rede bridge própria, `read_only`, `cap_drop: ALL`, usuário 1000, 256 MB.
 - Basic-auth no Traefik; o hash fica no `.env`, a senha em texto só em `/root/.jarvis_credentials`.
@@ -50,7 +62,7 @@ Só use modelos que estão dentro da assinatura. O JARVIS nunca troca de modelo 
 ## Próximos passos (sugestão)
 1. **Jean revisar o prompt** (`src/prompt.mjs`) e escolher o nome definitivo (A.V.I.L.A., JARVIS-BR…).
 2. **Matriz de permissões**: 🟢 reversível / 🟡 sensível / 🔴 irreversível ou com custo, e como o "sim" funciona em cada canal (web, Telegram).
-3. **Telegram**: canal no celular, aceitando só o chat do Jean.
+3. ~~Telegram~~ (feito). Próximo: ligar a primeira ferramenta de verdade ao botão de "sim".
 4. **Briefing 06:30 / revisão 21:00**: definir fontes (agenda, e-mail, status da VPS, clientes REAL H com regras de LGPD).
 5. **Ferramentas de leitura** (status da VPS, agenda, web) via MCP; depois escrita com aprovação.
 6. **Memória**: embeddings locais e notas de diário (`08-Diario`) escritas pelo próprio JARVIS, com revisão.

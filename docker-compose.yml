@@ -1,0 +1,48 @@
+# JARVIS v0.1 — rede bridge própria, sem portas publicadas.
+# O Traefik (rede host) alcança o IP do container na porta 3200, com HTTPS + basic-auth.
+# Segredos: OLLAMA_API_KEY e JARVIS_BASICAUTH_USERS ficam no .env (chmod 600, fora do git).
+name: jarvis
+services:
+  jarvis:
+    image: node:22-alpine
+    restart: unless-stopped
+    user: "1000:1000"
+    working_dir: /app
+    command: ["node", "server.mjs"]
+    environment:
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:?defina OLLAMA_API_KEY no .env}
+      OLLAMA_URL: ${OLLAMA_URL:-https://ollama.com}
+      JARVIS_MODEL: ${JARVIS_MODEL:-glm-5.3-flash}
+      HOST: 0.0.0.0
+      PORT: "3200"
+      VAULT_DIR: /app/vault
+      DATA_DIR: /app/data
+      TZ: America/Rio_Branco
+    volumes:
+      - ./server.mjs:/app/server.mjs:ro
+      - ./src:/app/src:ro
+      - ./public:/app/public:ro
+      - ./vault:/app/vault:ro
+      - ./data:/app/data
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3200/api/saude').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+      start_interval: 2s
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.jarvis.rule=Host(`jarvis.72-62-11-116.sslip.io`)
+      - traefik.http.routers.jarvis.entrypoints=websecure
+      - traefik.http.routers.jarvis.tls.certresolver=letsencrypt
+      - traefik.http.routers.jarvis.middlewares=jarvis-auth
+      - traefik.http.middlewares.jarvis-auth.basicauth.users=${JARVIS_BASICAUTH_USERS:?defina JARVIS_BASICAUTH_USERS no .env}
+      - traefik.http.middlewares.jarvis-auth.basicauth.realm=JARVIS
+      - traefik.http.middlewares.jarvis-auth.basicauth.removeheader=true
+      - traefik.http.services.jarvis.loadbalancer.server.port=3200

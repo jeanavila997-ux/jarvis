@@ -4,7 +4,7 @@ import { readFile, writeFile, readdir, mkdir, rename } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { Indice } from './src/retrieval.mjs';
-import { montarPrompt } from './src/prompt.mjs';
+import { montarPrompt } from './src/prompt.proposta.mjs';
 
 const PORT = Number(process.env.PORT || 3200);
 const HOST = process.env.HOST || '0.0.0.0';

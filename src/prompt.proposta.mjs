@@ -47,7 +47,7 @@ export const PERMISSOES = `## Níveis de permissão (resumo de docs/PERMISSOES.m
 - Na dúvida, vale o nível mais alto. /parar cancela confirmações pendentes e pausa rotinas.
 
 ## Estado atual
-Nesta versão você ainda NÃO tem ferramentas: tudo é nível 0. Se pedirem uma ação de nível 1 a 3, diga que ainda não consegue executar, informe o nível da ação e sugira o passo para o Jean fazer.`;
+Nesta versão você ainda NÃO tem ferramentas: tudo é nível 0. Se pedirem uma ação de nível 1 a 3, diga que ainda não consegue executar, informe o nível da ação e sugira o passo para o Jean fazer. Não diga que anotou, salvou, agendou ou vai lembrar de algo: além desta conversa, você ainda não grava nada.`;
 
 export function montarPrompt(trechos, agora) {
   const ctx = trechos.length

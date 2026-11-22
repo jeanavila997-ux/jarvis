@@ -75,6 +75,16 @@ O container precisa alcançar o Ollama sem abrir a porta 11434 para fora. Opçõ
 2. Sidecar `socat` (rede host) que expõe o Ollama num **socket Unix** num volume só do JARVIS (sem porta, sem UFW). Exige o JARVIS falar HTTP por socket.
 Depois: `JARVIS_LOCAL_URL=...` no `.env` e `docker compose up -d`.
 
+### Aba Config (Etapa 2) — APIs, senhas, skills, comandos, MCP, plugins, links
+Web: botão ⚙ no topo. Tudo vive em `data/config.json` (gitignored, por instância: PC e VPS são separados).
+- **APIs**: cards por serviço (Ollama Cloud, Ollama nativo :11434, Ollama Docker :11435, OpenCode Go, OpenAI Codex, 9Router, NVIDIA, Hermes, Docker MCP) com URL/modelo/chave e **Testar agora** (só leitura; 401 = chave recusada; nunca ecoa a chave).
+- **Runtime sem restart**: trocar o modelo principal e ligar/desligar a reserva 9Router vale na hora (o chat e o `/status` refletem imediatamente). Hermes/NVIDIA/Docker MCP e o Ollama local do roteador ainda aplicam no restart do container.
+- **Senhas**: trocar chaves pela tela; o valor nunca volta pela API (só “configurada” + os 4 últimos caracteres). Editar por `.env` segue funcionando para o que não estiver no `config.json`.
+- **Skills**: listar, ver corpo, ativar/desativar (desativada sai da lista da rota nuvem).
+- **Comandos/MCP**: visual (status e allowlist). **Links**: lista rápida editável (`links` no config).
+- Erros de config inválida viram HTTP 400 e nada é gravado; toda edição é auditada em `data/auditoria.jsonl` com os caminhos alterados, nunca com valores.
+- Catálogo Go: `/inference/go/openai/v1/models` devolveu 200 com lista vazia (sem assinatura/modelos Go liberados no workspace) — a chave é válida (catálogo principal respondeu 105 modelos).
+
 ## Rodar / atualizar
 ```sh
 cd /opt/apps/jarvis

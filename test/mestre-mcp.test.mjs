@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { nivelFerramenta, criarClienteMestre, textoMestreStatus, FERRAMENTAS_NIVEL2 } from '../src/mestre-mcp.mjs';
-import { Confirmacoes } from '../src/confirmacoes.mjs';
+import { Confirmacoes, NIVEL } from '../src/confirmacoes.mjs';
 
 test('níveis: leitura 0, as 4 ações 2, fora da lista e destrutivo 3', () => {
   for (const n of ['status', 'list_operations', 'list_memories']) assert.equal(nivelFerramenta(n).nivel, 0);
@@ -64,4 +64,18 @@ test('nível 2 passa por Confirmacoes; nível 3 é recusado sem criar botão', a
   assert.ok(audit.some(e => e.resultado === 'recusado-nivel3'));
   const sem = c.prepararAcao({ nome: 'ask_grok', args: { pergunta: 'oi' } });
   assert.equal(sem.recusado, true);
+});
+
+// --- prefixo mestre_ (nomes reais do launcher, medidos em 21/11/2026) ---
+test('prefixo mestre_: leitura vira nível 0', () => {
+  for (const n of ['mestre_system_status', 'mestre_list_operations', 'mestre_list_memories']) assert.equal(nivelFerramenta(n).nivel, NIVEL.LIVRE, n);
+});
+test('prefixo mestre_: ações viram nível 2', () => {
+  for (const n of ['mestre_save_memory', 'mestre_optimize_ram_and_temp', 'mestre_ask_grok']) assert.equal(nivelFerramenta(n).nivel, NIVEL.SIM, n);
+  assert.equal(nivelFerramenta('mestre_run_operation', { operation: 'limpar_temp' }).nivel, NIVEL.SIM);
+});
+test('prefixo mestre_: destrutivo e desconhecido seguem nível 3', () => {
+  assert.equal(nivelFerramenta('mestre_run_operation', { operation: 'apagar_pasta' }).nivel, NIVEL.PROIBIDO);
+  assert.equal(nivelFerramenta('mestre_run_operation', {}).nivel, NIVEL.PROIBIDO);
+  for (const n of ['mestre_turbo_diagnostico', 'mestre_turbo_otimizar', 'mestre_qualquer']) assert.equal(nivelFerramenta(n).nivel, NIVEL.PROIBIDO, n);
 });

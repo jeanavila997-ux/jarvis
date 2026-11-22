@@ -29,8 +29,17 @@ function textoArgs(args) {
   try { return JSON.stringify(args ?? {}); } catch { return ''; }
 }
 
+// O launcher do Mestre publica as ferramentas com o prefixo "mestre_" (ex.: mestre_system_status).
+// Tiramos o prefixo só para CLASSIFICAR; a chamada ao MCP continua com o nome original.
+// Ferramentas desconhecidas (ex.: mestre_turbo_*) seguem recusadas (fail-closed).
+export function nomeBase(nome) {
+  return String(nome || '').trim().replace(/^mestre_/i, '');
+}
+
 export function nivelFerramenta(nome, args = {}, { extraLeitura = [] } = {}) {
-  const n = String(nome || '').trim();
+  const original = String(nome || '').trim();
+  if (extraLeitura.includes(original)) return { nivel: NIVEL.LIVRE, motivo: 'leitura' };
+  const n = nomeBase(original);
   if (FERRAMENTAS_LEITURA.includes(n) || extraLeitura.includes(n)) return { nivel: NIVEL.LIVRE, motivo: 'leitura' };
   if (!FERRAMENTAS_NIVEL2.includes(n)) return { nivel: NIVEL.PROIBIDO, motivo: `ferramenta fora da allowlist (${n || 'vazia'})` };
   if (n === 'run_operation') {

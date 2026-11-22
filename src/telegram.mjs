@@ -2,6 +2,8 @@
 import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import path from 'node:path';
 import { Confirmacoes, NIVEL } from './confirmacoes.mjs';
+import { AJUDA as AJUDA_REGRAS, TEXTO_PERMISSOES, textoStatus } from './regras.mjs';
+import { textoResumo } from './uso.mjs';
 
 const LIMITE = 4000;
 
@@ -22,7 +24,7 @@ export function textoPuro(md) {
   return md.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/__([^_]+)__/g, '$1').replace(/^#{1,6}\s+/gm, '').replace(/^```\w*\s*$/gm, '').trim();
 }
 
-export function criarTelegram({ token, chatPermitido, dataDir, perguntar, lerConv, novaConv, auditar, status, api: apiInjetada }) {
+export function criarTelegram({ token, chatPermitido, dataDir, perguntar, lerConv, novaConv, auditar, status, resumo = async () => ({ total: 0, dias: 1 }), api: apiInjetada }) {
   if (!token || !chatPermitido) { console.log('[telegram] desativado (TELEGRAM_BOT_TOKEN ou TELEGRAM_ALLOWED_CHAT_ID ausente)'); return null; }
   const permitido = String(chatPermitido);
   const dir = path.join(dataDir, 'telegram');
@@ -66,21 +68,16 @@ export function criarTelegram({ token, chatPermitido, dataDir, perguntar, lerCon
     return conv;
   }
 
-  const AJUDA = `Comandos:
-/nova — começa uma conversa nova
-/status — saúde do JARVIS (só leitura)
-/parar — cancela confirmações pendentes
-/testesim — mostra como funciona o botão de "sim" (não executa nada)`;
+  const AJUDA = AJUDA_REGRAS;
 
   async function comando(chatId, cmd) {
-    if (cmd === '/start') return enviar(chatId, `Olá, Jean. Sou o JARVIS, agora também no Telegram. Pode perguntar em texto; uso o vault do projeto e cito as notas.\n\nNesta versão eu só converso: não executo nada.\n\n${AJUDA}`);
+    if (cmd === '/start') return enviar(chatId, `Olá, Jean. Sou o JARVIS, agora também no Telegram. Pode perguntar em texto; uso o vault do projeto e cito as notas.\n\nNesta versão eu só converso: não executo nada. Perguntas simples vão para regras ou modelo local; o resto vai para a nuvem da assinatura.\n\n${AJUDA}`);
     if (cmd === '/nova') { delete chats[chatId]; await gravar(arqChats, chats); return enviar(chatId, 'Conversa nova iniciada. O histórico anterior continua salvo.'); }
     if (cmd === '/parar') { const n = confirmacoes.cancelarTodas(chatId); return enviar(chatId, n ? `Parado. ${n} confirmação(ões) pendente(s) cancelada(s).` : 'Parado. Não havia confirmações pendentes nem rotinas ativas.'); }
-    if (cmd === '/status') {
-      const s = status(); const h = Math.floor(s.uptimeS / 3600), m = Math.floor(s.uptimeS % 3600 / 60);
-      const idx = s.indexado ? new Date(s.indexado).toLocaleString('pt-BR', { timeZone: 'America/Rio_Branco' }) : '—';
-      return enviar(chatId, `JARVIS no ar há ${h}h${String(m).padStart(2, '0')}min\nModelo: ${s.modelo} (Ollama Cloud, sem fallback)\nVault: ${s.notas} notas, ${s.trechos} trechos (indexado ${idx}, Acre)\nConfirmações pendentes: ${confirmacoes.pendentes(chatId)}`);
-    }
+    if (cmd === '/status') return enviar(chatId, textoStatus({ ...status(), pendentes: confirmacoes.pendentes(chatId) }) + '\n\n' + textoResumo(await resumo(1)));
+    if (cmd === '/custo' || cmd === '/custos') return enviar(chatId, textoResumo(await resumo(1)) + '\n\n' + textoResumo(await resumo(7)));
+    if (cmd === '/permissoes') return enviar(chatId, TEXTO_PERMISSOES);
+    if (cmd === '/ajuda' || cmd === '/help') return enviar(chatId, AJUDA);
     if (cmd === '/testesim') {
       const c = confirmacoes.criar({ nivel: NIVEL.SIM, acao: 'teste do botão de confirmação', alvo: 'nenhum', canal: 'telegram', chatId });
       return enviar(chatId, `Ação de nível 2 (exemplo):\n• Teste do botão de confirmação — nada será executado.\nExpira em 10 minutos. Um "sim" vale para uma ação só.`,
@@ -94,10 +91,10 @@ export function criarTelegram({ token, chatPermitido, dataDir, perguntar, lerCon
     digitando(); const t = setInterval(digitando, 4500);
     try {
       const conv = await convDoChat(chatId, texto);
-      const { resposta, fontes, erro } = await perguntar(conv, texto);
+      const { resposta, fontes, erro, rota } = await perguntar(conv, texto, { canal: 'telegram' });
       let saida = textoPuro(resposta || '');
-      if (saida && fontes.length && !/fontes\s*:/i.test(saida)) saida += `\n\n📎 Notas consultadas: ${fontes.map(f => `[[${f}]]`).join(' · ')}`;
-      if (erro) saida = (saida ? saida + '\n\n' : '') + `⚠️ Erro do modelo: ${erro}\n(Não troquei para outro modelo: sem fallback.)`;
+      if (saida && rota !== 'regras' && rota !== 'plano-b-regras' && fontes.length && !/fontes\s*:/i.test(saida)) saida += `\n\n📎 Notas consultadas: ${fontes.map(f => `[[${f}]]`).join(' · ')}`;
+      if (erro && rota !== 'plano-b-regras') saida = (saida ? saida + '\n\n' : '') + `⚠️ Erro do modelo: ${erro}\n(Sem fallback pago.)`;
       await enviar(chatId, saida || '⚠️ Resposta vazia.');
     } finally { clearInterval(t); }
   }

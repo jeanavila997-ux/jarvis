@@ -1,4 +1,4 @@
-# JARVIS v0.1 (A.V.I.L.A.)
+# JARVIS v0.2 (A.V.I.L.A.)
 
 Primeira versão do assistente pessoal do Jean, inspirada no JARVIS do Homem de Ferro.
 Nesta versão ele **só conversa**: responde em português, consulta o vault JARVIS (Obsidian) e cita as notas que usou.
@@ -7,7 +7,8 @@ Não tem ferramentas: não executa comandos, não envia mensagens, não apaga na
 - **Endereço:** https://jarvis.72-62-11-116.sslip.io (HTTPS + senha; usuário `jean`)
 - **Senha:** só na VPS, em `/root/.jarvis_credentials` (chmod 600)
 - **Cérebro:** Ollama Cloud (`https://ollama.com/api/chat`), com a chave `OLLAMA_API_KEY` da assinatura do Jean
-- **Modelo padrão:** `glm-5.3-flash` (o mesmo do Hermes). **Sem fallback automático**: se o modelo falhar, o erro aparece no chat.
+- **Modelo padrão (nuvem):** `glm-5.3-flash` (o mesmo do Hermes). **Sem fallback pago**: se a nuvem falhar, o plano B é uma resposta por regras, sem IA.
+- **Roteador de custo (Etapa 1):** regras fixas → Guarda de permissões → classificador local → local ou nuvem. Ver seção abaixo.
 
 ## Como funciona
 | Parte | Arquivo |
@@ -19,11 +20,50 @@ Não tem ferramentas: não executa comandos, não envia mensagens, não apaga na
 | Conversas salvas em JSON | `data/conversas/*.json` |
 | Canal Telegram + botão de "sim" | `src/telegram.mjs`, `src/confirmacoes.mjs` |
 | Auditoria (nível 1+, chats negados) | `src/auditoria.mjs` → `data/auditoria.jsonl` |
+| Roteador, regras, Guarda, classificador, uso | `src/roteador.mjs`, `src/regras.mjs`, `src/permissoes.mjs`, `src/classificador.mjs`, `src/uso.mjs` → `data/uso.jsonl` |
 | Cópia do vault (só leitura no container) | `vault/` |
 
 A cada pergunta, o servidor busca os trechos mais relevantes do vault (pergunta atual + anterior),
 coloca no prompt de sistema junto com o perfil do Jean e manda as últimas 12 mensagens ao modelo.
 As notas usadas aparecem como etiquetas embaixo da resposta.
+
+## Roteador de custo (Etapa 1)
+Cada mensagem (web ou Telegram) passa por `perguntar()` em `server.mjs`, nesta ordem:
+
+| # | Etapa | Arquivo | O que faz |
+|---|---|---|---|
+| 1 | Regras fixas, sem IA | `src/regras.mjs` | `status`, `ajuda`/`comandos`, `custo`, `permissoes` (com ou sem `/`) respondem na hora, custo zero |
+| 2 | Guarda (permissão) | `src/permissoes.mjs` | Nível 0-3 **só por regra fixa** do `docs/PERMISSOES.md`. Nível 1+ é auditado e nunca vai para o modelo local |
+| 3 | Classificador local | `src/classificador.mjs` | Modelo pequeno do Ollama da VPS, JSON rígido validado: `{nota 1-5, tipo}`. Só escolhe a rota |
+| 4 | Rota | `src/roteador.mjs` | Nota 1-2 de conversa trivial (saudação, ou pergunta simples nota 1) → **local**. Nota 3+, código, vault, cálculo, dado atual (preço, hoje, status) → **nuvem** `glm-5.3-flash` |
+| 5 | Plano B | `server.mjs` | Classificador ou local travou/falhou → nuvem (a mesma da assinatura). Nuvem falhou → **resposta por regras** com as notas do vault. Nunca um serviço pago novo |
+| 6 | Registro de uso | `src/uso.mjs` | Uma linha por resposta em `data/uso.jsonl` |
+
+**Modelo local:** `llama3.2:3b` (já estava no Ollama da VPS). Medido na CPU da VPS: classificação ~1 s com o modelo carregado
+(primeira carga 10-75 s), resposta curta 5-12 s. Fica carregado 30 min (`keep_alive`), ~2-3 GB de RAM.
+
+**Estado atual: local DESLIGADO** (`JARVIS_LOCAL_URL` vazio). O Ollama da VPS escuta só em `127.0.0.1:11434` e o container
+está numa rede bridge própria, então não alcança o Ollama. Não mudamos o bind do Ollama nem o UFW por segurança.
+Com o local desligado: regras → Guarda → nuvem → plano B por regras. Para ligar, ver "Ligar o modelo local".
+
+### Ver custos e uso
+- Telegram: `/custo` (hoje e 7 dias) ou `/status`. Web: digite `custo` ou `status`.
+- API (atrás do basic-auth): `GET /api/custo`.
+- Arquivo: `data/uso.jsonl` (JSONL, só acrescenta). Campos: `ts` (Acre), `canal`, `rota` (`regras`|`local`|`nuvem`|`plano-b-regras`),
+  `modelo`, `motivo` (ex.: `nota-4`, `guarda-nivel-2`, `plano-b-local-falhou`), `nota`, `tipo`, `nivel`, `ms`, `classif_ms`,
+  `tokens_in`, `tokens_out`, `classif_tokens`, `custo_usd` (sempre 0: local é grátis e a nuvem está na assinatura), `cobranca`, `erro`.
+- Na VPS: `tail -n 20 /opt/apps/jarvis/data/uso.jsonl` ou, por rota:
+  `python3 -c "import json,collections;c=collections.Counter(json.loads(l)['rota'] for l in open('/opt/apps/jarvis/data/uso.jsonl'));print(c)"`
+
+### Testes
+- Unitários (sem rede): `docker run --rm --network none -u 1000:1000 --read-only --tmpfs /tmp -v /opt/apps/jarvis:/app:ro -w /app node:22.23.5-alpine node --test test/etapa1.test.mjs` (todos devem passar)
+- Classificador ao vivo (só o Ollama local, sem nuvem): `docker run --rm --network host --read-only --cap-drop ALL -u 1000:1000 -v /opt/apps/jarvis:/app:ro -w /app node:22.23.5-alpine node scripts/testar-local.mjs`
+
+### Ligar o modelo local (pendente, precisa de decisão do Jean)
+O container precisa alcançar o Ollama sem abrir a porta 11434 para fora. Opções, da mais simples à mais isolada:
+1. Ollama escutar também no gateway da rede `jarvis_default` + regra no UFW só dessa sub-rede para a 11434 (mexe em serviço e UFW).
+2. Sidecar `socat` (rede host) que expõe o Ollama num **socket Unix** num volume só do JARVIS (sem porta, sem UFW). Exige o JARVIS falar HTTP por socket.
+Depois: `JARVIS_LOCAL_URL=...` no `.env` e `docker compose up -d`.
 
 ## Rodar / atualizar
 ```sh
@@ -44,11 +84,11 @@ Edite `JARVIS_MODEL` no `.env` (ex.: `kimi-k2.6`, `deepseek-v4.1-flash` — ver 
 Só use modelos que estão dentro da assinatura. O JARVIS nunca troca de modelo sozinho.
 
 ## Telegram (@Agenteejarvis_bot)
-- Long polling (`getUpdates`) dentro do mesmo serviço (`src/telegram.mjs`). Mesmo cérebro do chat web: busca no vault, prompt ativo e Ollama Cloud, sem fallback.
+- Long polling (`getUpdates`) dentro do mesmo serviço (`src/telegram.mjs`). Mesmo cérebro do chat web: regras, Guarda, roteador, busca no vault e Ollama Cloud, sem fallback pago.
 - **Só responde ao chat do Jean** (`TELEGRAM_ALLOWED_CHAT_ID`). Outros chats recebem uma linha ("Este assistente é privado.", no máximo a cada 6 h) e ficam registrados em `data/auditoria.jsonl`, sem o conteúdo.
 - Uma conversa por chat (`data/telegram/chats.json` aponta para `data/conversas/`). As conversas do Telegram aparecem no chat web com o prefixo `[Telegram]`.
 - Resposta em texto puro, dividida em partes de até 4000 caracteres, com "digitando…" enquanto espera e as notas `[[...]]` no fim.
-- Comandos: `/start`, `/nova` (conversa nova), `/status` (no ar há quanto tempo, modelo, notas do vault), `/parar` (cancela confirmações pendentes), `/testesim` (mostra o botão de "sim" sem executar nada).
+- Comandos: `/start`, `/ajuda`, `/nova` (conversa nova), `/status` (no ar, modelos, vault, uso de hoje), `/custo` (uso por rota), `/permissoes`, `/parar` (cancela confirmações pendentes), `/testesim` (mostra o botão de "sim" sem executar nada).
 - Confirmação de nível 2 (`src/confirmacoes.mjs`): botões Confirmar/Cancelar, só do chat do Jean, expira em 10 min, uso único. Nível 3 é sempre recusado. **Nenhuma ação real está ligada ainda.**
 - Variáveis no `.env`: `TELEGRAM_BOT_TOKEN` e `TELEGRAM_ALLOWED_CHAT_ID`. Sem elas, o canal fica desligado. O token do Hermes é outro, e os dois não podem usar o mesmo bot (daria erro 409).
 - Logs: `docker compose logs -f jarvis | grep telegram`
@@ -62,7 +102,7 @@ Só use modelos que estão dentro da assinatura. O JARVIS nunca troca de modelo 
 ## Próximos passos (sugestão)
 1. **Jean revisar o prompt** (`src/prompt.mjs`) e escolher o nome definitivo (A.V.I.L.A., JARVIS-BR…).
 2. **Matriz de permissões**: 🟢 reversível / 🟡 sensível / 🔴 irreversível ou com custo, e como o "sim" funciona em cada canal (web, Telegram).
-3. ~~Telegram~~ (feito). Próximo: ligar a primeira ferramenta de verdade ao botão de "sim".
+3. ~~Telegram~~ (feito). ~~Etapa 1: roteador de custo~~ (feito; modelo local aguardando decisão de rede). Próximo: ligar a primeira ferramenta de verdade ao botão de "sim".
 4. **Briefing 06:30 / revisão 21:00**: definir fontes (agenda, e-mail, status da VPS, clientes REAL H com regras de LGPD).
 5. **Ferramentas de leitura** (status da VPS, agenda, web) via MCP; depois escrita com aprovação.
 6. **Memória**: embeddings locais e notas de diário (`08-Diario`) escritas pelo próprio JARVIS, com revisão.

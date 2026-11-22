@@ -13,6 +13,9 @@ services:
       OLLAMA_API_KEY: ${OLLAMA_API_KEY:?defina OLLAMA_API_KEY no .env}
       OLLAMA_URL: ${OLLAMA_URL:-https://ollama.com}
       JARVIS_MODEL: ${JARVIS_MODEL:-glm-5.3-flash}
+      # Roteador (Etapa 1): modelo local no Ollama da VPS. Vazio = local desligado (tudo que não é regra vai para a nuvem).
+      JARVIS_LOCAL_URL: ${JARVIS_LOCAL_URL:-}
+      JARVIS_LOCAL_MODEL: ${JARVIS_LOCAL_MODEL:-llama3.2:3b}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_ALLOWED_CHAT_ID: ${TELEGRAM_ALLOWED_CHAT_ID:-}
       HOST: 0.0.0.0

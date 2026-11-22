@@ -801,6 +801,12 @@ export async function executar(argv, { env = process.env, stdin = stdinFd, stdou
       if (piped) args.texto = piped;
     }
 
+    if (args.timeout == null && env.JARVIS_TIMEOUT_MS) {
+      const n = Number(env.JARVIS_TIMEOUT_MS);
+      if (!Number.isFinite(n)) throw new ErroCli('JARVIS_TIMEOUT_MS deve ser um número em milissegundos.', 2);
+      args.timeout = n;
+    }
+
     const cfg = await carregarConfig(caminhoConfig(env));
     const destino = resolverDestino(args, cfg, env);
 

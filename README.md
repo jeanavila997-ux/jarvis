@@ -24,6 +24,20 @@ Tem rotinas de nível 0-1 (briefing, revisão, diário, reindexar). Não executa
 | Roteador, regras, Guarda, classificador, uso | `src/roteador.mjs`, `src/regras.mjs`, `src/permissoes.mjs`, `src/classificador.mjs`, `src/uso.mjs` → `data/uso.jsonl` |
 | Cópia do vault (só leitura no container) | `vault/` |
 
+## CLI (terminal)
+
+Cliente de linha de comando, sem dependências, em `cli/jarvis.mjs`. Fala com as rotas reais da API (`GET /api/saude`, `POST /api/chat`, etc.).
+
+```sh
+npm link          # ou: node cli/jarvis.mjs
+jarvis health
+jarvis "oi"
+jarvis chat --target local
+jarvis --target vps status
+```
+
+Instalação, config, exemplos e notas de segurança: [`cli/README.md`](cli/README.md).
+
 A cada pergunta, o servidor busca os trechos mais relevantes do vault (pergunta atual + anterior),
 coloca no prompt de sistema junto com o perfil do Jean e manda as últimas 12 mensagens ao modelo.
 As notas usadas aparecem como etiquetas embaixo da resposta.

@@ -16,9 +16,11 @@ import { criarTelegram } from './src/telegram.mjs';
 import { criarRotinas } from './src/rotinas.mjs';
 import { criarSkills } from './src/skills.mjs';
 import { auditar } from './src/auditoria.mjs';
-import { exigeChaveOllama } from './src/http-unix.mjs';
+import { ehUnix, exigeChaveOllama, fetchUrl } from './src/http-unix.mjs';
 import { criarClienteHermes, interpretarPedidoHermes, textoHermesStatus } from './src/hermes.mjs';
 import { criarClienteNvidia, criarClienteNvidiaMcp } from './src/nvidia.mjs';
+import { criarClienteMestre, textoMestreStatus } from './src/mestre-mcp.mjs';
+import { criarClienteVoz, textoVozStatus } from './src/voz.mjs';
 
 const PORT = Number(process.env.PORT || 3200);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -45,12 +47,30 @@ const hermes = criarClienteHermes({
   apiKey: process.env.HERMES_API_KEY || '',
 });
 const nvidia = process.env.NVIDIA_MCP_URL
-  ? criarClienteNvidiaMcp({ ligada: process.env.NVIDIA_APP === '1', url: process.env.NVIDIA_MCP_URL })
+  ? criarClienteNvidiaMcp({ ligada: process.env.NVIDIA_APP === '1', ...(ehUnix(process.env.NVIDIA_MCP_URL)
+      // VPS: túnel do PC + socket (scripts/systemd/jarvis-nvidia-proxy.service)
+      ? { url: '/mcp', fetchFn: (p, o) => fetchUrl(process.env.NVIDIA_MCP_URL, p, o) }
+      : { url: process.env.NVIDIA_MCP_URL }) })
   : criarClienteNvidia({ ligada: process.env.NVIDIA_APP === '1', url: process.env.NVIDIA_PROXY_URL, token: process.env.NVIDIA_PROXY_TOKEN || '' });
-let snapHermes = null, snapNvidia = null;
+// Mestre do PC (MCP do PC via túnel + socket). Desligado por padrão: MESTRE_MCP=1 liga.
+const mestre = criarClienteMestre({ ligada: process.env.MESTRE_MCP === '1', url: process.env.MESTRE_MCP_URL || '', token: process.env.MESTRE_MCP_TOKEN || '', extraLeitura: process.env.MESTRE_MCP_EXTRA_LEITURA || '' });
+async function textoMestre() { return textoMestreStatus(await mestre.saudavel()); }
+const voz = criarClienteVoz({
+  ligada: process.env.VOICEBOX === '1',
+  url: process.env.VOICEBOX_URL || '',
+  urlPc: process.env.VOICEBOX_PC_URL || '',
+  profileId: process.env.VOICEBOX_PROFILE_ID || '',
+  language: process.env.VOICEBOX_LANGUAGE || 'pt',
+  engine: process.env.VOICEBOX_ENGINE || 'kokoro',
+  timeoutMs: Number(process.env.VOICEBOX_TIMEOUT_MS || 180000),
+  ffmpegBin: process.env.VOICEBOX_FFMPEG || 'ffmpeg',
+});
+async function textoVoz() { return textoVozStatus(voz.ativa ? await voz.saudavel() : { ok: false, motivo: 'desligado' }, { ligada: voz.ativa }); }
+let snapHermes = null, snapNvidia = null, snapVoz = null;
 async function atualizarSnaps() {
   if (hermes.ativa) snapHermes = await hermes.saudavel();
   if (nvidia.ativa) snapNvidia = await nvidia.saudavel();
+  if (voz.ativa) snapVoz = await voz.saudavel();
 }
 async function textoHermes() {
   if (!hermes.ativa) return 'Hermes: desligado (defina HERMES_URL).';
@@ -134,8 +154,8 @@ const roteador = criarRoteador({
   classificar: texto => classificar(texto, { url: LOCAL_URL, model: LOCAL_MODEL, timeoutMs: CLASSIF_TIMEOUT_MS }),
   log: m => console.warn('[roteador]', m),
 });
-const statusAtual = () => ({ uptimeS: Math.round((Date.now() - INICIO) / 1000), modelo: MODEL, local: roteador.localLigado, localModelo: LOCAL_MODEL, nuvemLocal: NUVEM_LOCAL, reserva: reserva.ativa ? reserva.model : null, hermes: hermes.ativa ? (snapHermes || { ok: false, motivo: 'ainda-nao-medido' }) : null, nvidia: nvidia.ativa ? (snapNvidia || { ok: false, motivo: 'ainda-nao-medido' }) : null, notas: indice.notas, trechos: indice.chunks.length, indexado: indice.atualizado });
-const ctxRegras = { status: statusAtual, resumo: dias => resumoUso(DATA_DIR, dias), textoHermes, textoNvidia };
+const statusAtual = () => ({ uptimeS: Math.round((Date.now() - INICIO) / 1000), modelo: MODEL, local: roteador.localLigado, localModelo: LOCAL_MODEL, nuvemLocal: NUVEM_LOCAL, reserva: reserva.ativa ? reserva.model : null, hermes: hermes.ativa ? (snapHermes || { ok: false, motivo: 'ainda-nao-medido' }) : null, nvidia: nvidia.ativa ? (snapNvidia || { ok: false, motivo: 'ainda-nao-medido' }) : null, voicebox: voz.ativa ? (snapVoz || { ok: false, motivo: 'ainda-nao-medido' }) : null, notas: indice.notas, trechos: indice.chunks.length, indexado: indice.atualizado });
+const ctxRegras = { status: statusAtual, resumo: dias => resumoUso(DATA_DIR, dias), textoHermes, textoNvidia, textoMestre, textoVoz };
 const skills = criarSkills({ dataDir: DATA_DIR, log: m => console.warn('[skills]', m) });
 
 function planoBRegras(trechos, erroNuvem) {
@@ -288,10 +308,12 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && req.headers['x-jarvis'] !== '1') return json(res, 403, { erro: 'cabeçalho X-Jarvis ausente' });
     if (p === '/api/saude' && req.method === 'GET') {
       await atualizarSnaps();
-      return json(res, 200, { ok: true, versao: '0.2.0', modelo: MODEL, local: roteador.localLigado ? LOCAL_MODEL : null, nuvemLocal: NUVEM_LOCAL, hermes: statusAtual().hermes, nvidia: statusAtual().nvidia, reserva: reserva.ativa, notas: indice.notas, trechos: indice.chunks.length, ignorados: indice.ignorados, indexado: indice.atualizado });
+      return json(res, 200, { ok: true, versao: '0.2.0', modelo: MODEL, local: roteador.localLigado ? LOCAL_MODEL : null, nuvemLocal: NUVEM_LOCAL, hermes: statusAtual().hermes, nvidia: statusAtual().nvidia, voicebox: statusAtual().voicebox, reserva: reserva.ativa, notas: indice.notas, trechos: indice.chunks.length, ignorados: indice.ignorados, indexado: indice.atualizado });
     }
     if (p === '/api/hermes' && req.method === 'GET') return json(res, 200, { texto: await textoHermes(), snap: snapHermes });
     if (p === '/api/nvidia' && req.method === 'GET') return json(res, 200, { texto: await textoNvidia(), snap: snapNvidia });
+    if (p === '/api/mestre' && req.method === 'GET') return json(res, 200, { texto: await textoMestre(), ativo: mestre.ativa });
+    if (p === '/api/voz' && req.method === 'GET') return json(res, 200, { texto: await textoVoz(), snap: snapVoz, ativo: voz.ativa });
     if (p === '/api/custo' && req.method === 'GET') return json(res, 200, { hoje: await resumoUso(DATA_DIR, 1), semana: await resumoUso(DATA_DIR, 7) });
     if (p === '/api/conversas' && req.method === 'GET') return json(res, 200, await listarConvs());
     if (p.startsWith('/api/conversas/') && req.method === 'GET') {
@@ -310,13 +332,13 @@ const server = http.createServer(async (req, res) => {
     if (!res.headersSent) json(res, 500, { erro: e.message }); else res.end();
   }
 });
-server.listen(PORT, HOST, () => console.log(`[jarvis] ouvindo em ${HOST}:${PORT} · principal ${MODEL} via ${OLLAMA_URL} · local ${roteador.localLigado ? LOCAL_MODEL : 'desligado'} · hermes ${hermes.ativa ? 'ligado' : 'off'} · nvidia ${nvidia.ativa ? 'ligado' : 'off'}`));
+server.listen(PORT, HOST, () => console.log(`[jarvis] ouvindo em ${HOST}:${PORT} · principal ${MODEL} via ${OLLAMA_URL} · local ${roteador.localLigado ? LOCAL_MODEL : 'desligado'} · hermes ${hermes.ativa ? 'ligado' : 'off'} · nvidia ${nvidia.ativa ? 'ligado' : 'off'} · mestre ${mestre.ativa ? 'ligado' : 'off'} · voicebox ${voz.ativa ? 'ligado' : 'off'}`));
 atualizarSnaps().catch(() => {});
 const telegram = criarTelegram({
   token: process.env.TELEGRAM_BOT_TOKEN, chatPermitido: process.env.TELEGRAM_ALLOWED_CHAT_ID, dataDir: DATA_DIR,
   perguntar, lerConv, novaConv, salvarConv, skills, auditar: e => auditar(DATA_DIR, e),
   status: statusAtual, resumo: dias => resumoUso(DATA_DIR, dias),
-  hermes, nvidia, textoHermes, textoNvidia,
+  hermes, nvidia, textoHermes, textoNvidia, mestre, textoMestre, voz, textoVoz,
 });
 const rotinas = telegram ? criarRotinas({
   dataDir: DATA_DIR, chatPermitido: process.env.TELEGRAM_ALLOWED_CHAT_ID, enviar: telegram.enviar,
@@ -326,4 +348,4 @@ const rotinas = telegram ? criarRotinas({
 telegram?.ligarRotinas(rotinas);
 telegram?.iniciar();
 await rotinas?.ligar();
-for (const s of ['SIGTERM', 'SIGINT']) process.on(s, () => { telegram?.parar(); rotinas?.parar(); nvidia?.fechar?.().catch(() => {}); server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 3000).unref(); });
+for (const s of ['SIGTERM', 'SIGINT']) process.on(s, () => { telegram?.parar(); rotinas?.parar(); nvidia?.fechar?.().catch(() => {}); mestre?.fechar?.().catch(() => {}); server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 3000).unref(); });

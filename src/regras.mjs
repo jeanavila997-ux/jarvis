@@ -9,6 +9,7 @@ export const AJUDA = `Comandos (respondidos por regra, sem IA):
 /permissoes — os 4 níveis de permissão
 /hermes — status do Hermes (leitura); tarefas se a chave estiver configurada
 /nvidia — status da GPU via nvidia-app (só leitura)
+/mestre — status do Mestre do PC (leitura; ações só no Telegram com "sim")
 /ajuda — esta lista
 No Telegram também: /nova (conversa nova), /briefing, /revisao, /reindexar, /parar (cancela confirmações e pausa rotinas), /retomar, /testesim.
 Ações do Hermes que mudam algo (pausar, retomar, rodar, apagar, criar) são nível 2 e pedem "sim" no Telegram.`;
@@ -27,6 +28,7 @@ const PADROES = [
   ['permissoes', /^\/?(permissoes|permissao|niveis(\s+de\s+permissao)?)[\s?!.]*$/],
   ['hermes', /^\/?hermes[\s?!.]*$/],
   ['nvidia', /^\/?(nvidia|gpu|rtx)[\s?!.]*$/],
+  ['mestre', /^\/?(mestre|mestre\s+do\s+pc)[\s?!.]*$/],
 ];
 
 export function qualRegra(texto) {
@@ -62,5 +64,6 @@ export async function responderPorRegras(texto, ctx) {
   if (r === 'custo') return { regra: r, texto: textoResumo(await ctx.resumo(1)) + '\n\n' + textoResumo(await ctx.resumo(7)) };
   if (r === 'hermes' && ctx.textoHermes) return { regra: r, texto: await ctx.textoHermes() };
   if (r === 'nvidia' && ctx.textoNvidia) return { regra: r, texto: await ctx.textoNvidia() };
+  if (r === 'mestre' && ctx.textoMestre) return { regra: r, texto: await ctx.textoMestre() };
   return null;
 }

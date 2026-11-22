@@ -53,9 +53,6 @@ function camadaDefault(env) {
   };
 }
 
-function lerArquivoSeguro(arq, log) {
-  try { const s = readFile(arq, 'utf8').then(t => JSON.parse(t)); return Promise.resolve(s).catch(() => null); } catch { return Promise.resolve(null); }
-}
 
 function emCaminho(obj, caminho) {
   let o = obj;
@@ -191,7 +188,6 @@ export function criarConfig({ dataDir, env = process.env, agora = () => Date.now
     const novo = camadaArq ? mergeProfundo(structuredClone(camadaArq), structuredClone(parcial)) : structuredClone(parcial);
     // Segredo vazio/ausente no parcial, quando a api foi tocada, PROMOVE o valor atual para o arquivo.
     for (const caminho of SEGREDOS) {
-      const mencionado = emCaminho(parcial, caminho) !== undefined || emCaminho({ apis: parcial.apis || {} }, caminho) !== undefined;
       const secoesTocadas = Object.keys(parcial.apis || {});
       const idApi = caminho.split('.')[1];
       const campo = caminho.split('.')[2];

@@ -275,7 +275,7 @@ async function perguntar(conv, texto, { onDelta = () => {}, onPensando = () => {
         if (!r.resposta) throw new Error('O modelo terminou sem resposta.');
         ({ resposta, tokensIn, tokensOut } = r); modelo = nuvem.model;
       } catch (e) {
-        erro = e.message; modelo = MODEL;
+        erro = e.message; modelo = nuvem.model;
         console.error('[jarvis] erro no chat (nuvem):', erro);
         if (emitiu || signal?.aborted) resposta = e.parcial || '';
         else {

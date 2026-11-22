@@ -19,6 +19,7 @@
   <header>
     <button id="menu" class="icone" aria-label="Conversas">☰</button>
     <div class="logo"><span class="reator"></span>JARVIS <small>v0.1 · A.V.I.L.A.</small></div>
+    <button id="configBtn" class="cfgbtn" aria-label="Configurações" title="Configurações">⚙</button>
     <span id="modelo" class="mini"></span>
   </header>
   <section id="msgs">
@@ -38,6 +39,15 @@
     <button id="enviar" class="btn" type="submit">Enviar</button>
   </form>
 </main>
+<dialog id="janelaconfig" class="config">
+  <div class="configtopo">
+    <h2>Configurações</h2>
+    <button id="configFechar" class="icone fechacfg" aria-label="Fechar">✕</button>
+  </div>
+  <nav id="configAbas"></nav>
+  <section id="configConteudo"></section>
+</dialog>
+<script src="config.js" defer></script>
 <script src="app.js"></script>
 </body>
 </html>

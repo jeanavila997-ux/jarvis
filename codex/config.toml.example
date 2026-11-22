@@ -1,0 +1,21 @@
+# Recorte para colar em ~/.codex/config.toml (ou .codex/config.toml do projeto).
+# NÃO substitua o arquivo real do Jean. NÃO coloque senhas, tokens nem chaves aqui.
+# Sintaxe conferida na documentação oficial do Codex (approval_policy, sandbox_mode,
+# e MCP em streamable HTTP com o campo `url`):
+# https://github.com/openai/codex/blob/main/docs/config.md
+# https://github.com/openai/codex/blob/main/docs/sandbox.md
+
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+# Sem isto, chamadas de rede (JARVIS na VPS) pedem aprovação.
+# [sandbox_workspace_write]
+# network_access = true
+
+# MCP só no PC do Jean (a nuvem do Codex não alcança 127.0.0.1).
+# Transporte: Streamable HTTP, campo `url` (oficial).
+# [mcp_servers.nvidia-app]
+# url = "http://127.0.0.1:13508/mcp"
+#
+# [mcp_servers.mestre-pc]
+# url = "http://127.0.0.1:7777/mcp"

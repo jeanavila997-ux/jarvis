@@ -8,7 +8,7 @@ export const arqUso = dataDir => path.join(dataDir, 'uso.jsonl');
 export const tsAcre = (d = new Date()) => d.toLocaleString('sv-SE', { timeZone: 'America/Rio_Branco' }).replace(' ', 'T') + '-05:00';
 
 export async function registrarUso(dataDir, e) {
-  const linha = { ts: tsAcre(), ...e, custo_usd: 0, cobranca: e.rota === 'nuvem' ? 'assinatura-ollama-cloud' : 'gratis' };
+  const linha = { ts: tsAcre(), ...e, custo_usd: 0, cobranca: e.rota === 'nuvem' ? 'assinatura-ollama-cloud' : e.rota === 'reserva-9router' ? 'reserva-9router-pc-do-jean' : 'gratis' };
   try { await appendFile(arqUso(dataDir), JSON.stringify(linha) + '\n'); }
   catch (err) { console.error('[uso] falha ao gravar:', err.message); }
 }
@@ -35,7 +35,7 @@ export async function resumoUso(dataDir, dias = 1) {
 
 export function textoResumo(s) {
   if (!s.total) return `Uso (${s.dias === 1 ? 'hoje' : `últimos ${s.dias} dias`}): nenhuma resposta registrada ainda.`;
-  const nomes = { regras: 'Regras (sem IA)', local: 'Local (Ollama VPS)', nuvem: 'Nuvem (Ollama Cloud)', 'plano-b-regras': 'Plano B por regras' };
+  const nomes = { regras: 'Regras (sem IA)', local: 'Local (Ollama VPS)', nuvem: 'Nuvem (Ollama Cloud)', 'plano-b-regras': 'Plano B por regras', 'reserva-9router': 'Reserva 9Router (PC)' };
   const linhas = Object.entries(s.rotas).map(([k, r]) => `• ${nomes[k] || k}: ${r.chamadas} resp., ${r.tokens} tokens, média ${Math.round(r.ms / r.chamadas / 100) / 10}s${r.erros ? `, ${r.erros} erro(s)` : ''}${r.planoB ? `, ${r.planoB} plano B` : ''}`);
-  return `Uso (${s.dias === 1 ? 'hoje' : `últimos ${s.dias} dias`}, Acre): ${s.total} respostas\n${linhas.join('\n')}\nCusto extra: US$ 0 (local grátis; nuvem dentro da assinatura). Registro: data/uso.jsonl`;
+  return `Uso (${s.dias === 1 ? 'hoje' : `últimos ${s.dias} dias`}, Acre): ${s.total} respostas\n${linhas.join('\n')}\nCusto extra: US$ 0 (local grátis; nuvem dentro da assinatura; reserva 9Router só com modelo gratuito). Registro: data/uso.jsonl`;
 }

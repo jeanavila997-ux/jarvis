@@ -76,3 +76,28 @@ test('Registro de uso JSONL + resumo', async () => {
   const s = await resumoUso(dir, 1);
   assert.equal(s.total, 3); assert.equal(s.rotas.nuvem.tokens, 165); assert.equal(s.rotas.nuvem.planoB, 1);
 });
+
+import { criarReserva } from '../src/reserva9router.mjs';
+const sse = linhas => new Response(new ReadableStream({ start(c) { for (const l of linhas) c.enqueue(new TextEncoder().encode(l)); c.close(); } }), { status: 200 });
+test('Reserva 9Router: desligada por padrão, health com cache, SSE, 503 retry-after', async () => {
+  assert.equal(criarReserva({ ligada: false, url: 'http://x/v1', model: 'm', apiKey: 'k' }).ativa, false);
+  assert.equal(criarReserva({ ligada: true, url: 'http://x/v1', model: '', apiKey: 'k' }).ativa, false);
+  let t = 0, chamadasHealth = 0, urls = [];
+  const fetchFn = async (u, o) => {
+    urls.push(u);
+    if (u.endsWith('/api/health')) { chamadasHealth++; return new Response('{"ok":true}', { status: 200 }); }
+    assert.equal(o.headers.authorization, 'Bearer k');
+    if (JSON.parse(o.body).model === 'cheio') return new Response('{"error":{"message":"All accounts unavailable"}}', { status: 503, headers: { 'retry-after': '30' } });
+    return sse(['data: {"choices":[{"delta":{"content":"o"}}]}\n', 'data: {"choices":[{"delta":{"content":"k"}}]}\n', 'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2}}\n', 'data: [DONE]\n']);
+  };
+  const r = criarReserva({ ligada: true, url: 'http://x/v1/', model: 'm', apiKey: 'k', agora: () => t, fetchFn });
+  assert.equal(await r.saudavel(), true); assert.equal(await r.saudavel(), true); assert.equal(chamadasHealth, 1);
+  assert.equal(urls[0], 'http://x/api/health');
+  const out = await r.chat({ messages: [] });
+  assert.deepEqual(out, { resposta: 'ok', tokensIn: 5, tokensOut: 2 });
+  const c = criarReserva({ ligada: true, url: 'http://x/v1', model: 'cheio', apiKey: 'k', agora: () => t, fetchFn });
+  await assert.rejects(c.chat({ messages: [] }), /503/);
+  assert.equal(await c.saudavel(), false); t = 31000; assert.equal(await c.saudavel(), true);
+  const morto = criarReserva({ ligada: true, url: 'http://x/v1', model: 'm', apiKey: 'k', fetchFn: async () => { throw new Error('ECONNREFUSED'); } });
+  assert.equal(await morto.saudavel(), false);
+});

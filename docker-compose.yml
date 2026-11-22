@@ -16,6 +16,11 @@ services:
       # Roteador (Etapa 1): modelo local no Ollama da VPS. Vazio = local desligado (tudo que não é regra vai para a nuvem).
       JARVIS_LOCAL_URL: ${JARVIS_LOCAL_URL:-}
       JARVIS_LOCAL_MODEL: ${JARVIS_LOCAL_MODEL:-llama3.2:3b}
+      # Reserva 9Router do PC (OpenAI-compatível). Desligada por padrão; só se a nuvem falhar.
+      NINEROUTER_RESERVA: ${NINEROUTER_RESERVA:-0}
+      NINEROUTER_URL: ${NINEROUTER_URL:-}
+      NINEROUTER_MODEL: ${NINEROUTER_MODEL:-}
+      NINEROUTER_API_KEY: ${NINEROUTER_API_KEY:-}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_ALLOWED_CHAT_ID: ${TELEGRAM_ALLOWED_CHAT_ID:-}
       HOST: 0.0.0.0

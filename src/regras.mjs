@@ -38,6 +38,7 @@ export function textoStatus(s) {
   return `JARVIS no ar há ${h}h${String(m).padStart(2, '0')}min
 Nuvem: ${s.modelo} (Ollama Cloud, assinatura; sem fallback pago)
 Modelo local: ${local}
+Reserva 9Router (PC): ${s.reserva ? `ligada (${s.reserva})` : 'desligada'}
 Vault: ${s.notas} notas, ${s.trechos} trechos (indexado ${idx}, Acre)${s.pendentes != null ? `\nConfirmações pendentes: ${s.pendentes}` : ''}`;
 }
 

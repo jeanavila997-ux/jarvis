@@ -36,7 +36,7 @@ Cada mensagem (web ou Telegram) passa por `perguntar()` em `server.mjs`, nesta o
 | 2 | Guarda (permissão) | `src/permissoes.mjs` | Nível 0-3 **só por regra fixa** do `docs/PERMISSOES.md`. Nível 1+ é auditado e nunca vai para o modelo local |
 | 3 | Classificador local | `src/classificador.mjs` | Modelo pequeno do Ollama da VPS, JSON rígido validado: `{nota 1-5, tipo}`. Só escolhe a rota |
 | 4 | Rota | `src/roteador.mjs` | Nota 1-2 de conversa trivial (saudação, ou pergunta simples nota 1) → **local**. Nota 3+, código, vault, cálculo, dado atual (preço, hoje, status) → **nuvem** `glm-5.3-flash` |
-| 5 | Plano B | `server.mjs` | Classificador ou local travou/falhou → nuvem (a mesma da assinatura). Nuvem falhou → **resposta por regras** com as notas do vault. Nunca um serviço pago novo |
+| 5 | Plano B | `server.mjs` | Classificador ou local travou/falhou → nuvem (a mesma da assinatura). Nuvem falhou → reserva 9Router (se ligada e saudável) → **resposta por regras** com as notas do vault. Nunca um serviço pago novo |
 | 6 | Registro de uso | `src/uso.mjs` | Uma linha por resposta em `data/uso.jsonl` |
 
 **Modelo local:** `llama3.2:3b` (já estava no Ollama da VPS). Medido na CPU da VPS: classificação ~1 s com o modelo carregado
@@ -45,6 +45,15 @@ Cada mensagem (web ou Telegram) passa por `perguntar()` em `server.mjs`, nesta o
 **Estado atual: local DESLIGADO** (`JARVIS_LOCAL_URL` vazio). O Ollama da VPS escuta só em `127.0.0.1:11434` e o container
 está numa rede bridge própria, então não alcança o Ollama. Não mudamos o bind do Ollama nem o UFW por segurança.
 Com o local desligado: regras → Guarda → nuvem → plano B por regras. Para ligar, ver "Ligar o modelo local".
+
+### Reserva 9Router (PC do Jean) — desligada por padrão
+- Só entra quando a **nuvem falhou** e nada foi enviado ainda. Ordem: nuvem → reserva 9Router → plano B por regras.
+- Antes de tentar, `GET https://rvejurm.abc-tunnel.us/api/health` (sem custo, cache 60 s). PC desligado = health falha = vai direto para o plano B.
+- Timeout 20 s (`NINEROUTER_TIMEOUT_MS`). 401 = chave; 400 = modelo inválido; 503 = contas indisponíveis (respeita `retry-after`).
+- Variáveis no `.env`: `NINEROUTER_RESERVA` (0/1), `NINEROUTER_URL` (com `/v1`), `NINEROUTER_MODEL`, `NINEROUTER_API_KEY`. Depois `docker compose up -d`.
+- Rota registrada em `data/uso.jsonl` como `reserva-9router` (`cobranca: reserva-9router-pc-do-jean`). Use só modelo gratuito.
+- Teste de 21/11: `oc/jev-1.13-free` respondeu 400 "Model does not support this protocol" e `oc/muse-spark-1.3-contributor-free` respondeu "Model is unavailable". Falta escolher um modelo que funcione em `/v1/chat/completions`.
+- Futuro (não implementado): `/v1/models/embedding` (embeddings para a memória) e `/v1/models/web` (busca/fetch na web).
 
 ### Ver custos e uso
 - Telegram: `/custo` (hoje e 7 dias) ou `/status`. Web: digite `custo` ou `status`.

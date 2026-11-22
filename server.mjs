@@ -11,6 +11,7 @@ import { classificar } from './src/classificador.mjs';
 import { criarRoteador } from './src/roteador.mjs';
 import { responderPorRegras } from './src/regras.mjs';
 import { registrarUso, resumoUso } from './src/uso.mjs';
+import { criarReserva } from './src/reserva9router.mjs';
 import { criarTelegram } from './src/telegram.mjs';
 import { auditar } from './src/auditoria.mjs';
 
@@ -30,6 +31,9 @@ const LOCAL_URL = (process.env.JARVIS_LOCAL_URL || '').replace(/\/$/, '');
 const LOCAL_MODEL = process.env.JARVIS_LOCAL_MODEL || 'llama3.2:3b';
 const LOCAL_TIMEOUT_MS = Number(process.env.JARVIS_LOCAL_TIMEOUT_MS || 60000);
 const CLASSIF_TIMEOUT_MS = Number(process.env.JARVIS_CLASSIF_TIMEOUT_MS || 20000);
+// Reserva 9Router (PC do Jean): desligada por padrão; só depois que a nuvem falhar.
+const reserva = criarReserva({ ligada: process.env.NINEROUTER_RESERVA === '1', url: process.env.NINEROUTER_URL, model: process.env.NINEROUTER_MODEL,
+  apiKey: process.env.NINEROUTER_API_KEY, timeoutMs: Number(process.env.NINEROUTER_TIMEOUT_MS || 20000) });
 const PUBLIC = path.join(path.dirname(new URL(import.meta.url).pathname), 'public');
 
 const indice = new Indice(VAULT_DIR);
@@ -84,7 +88,7 @@ const roteador = criarRoteador({
   classificar: texto => classificar(texto, { url: LOCAL_URL, model: LOCAL_MODEL, timeoutMs: CLASSIF_TIMEOUT_MS }),
   log: m => console.warn('[roteador]', m),
 });
-const statusAtual = () => ({ uptimeS: Math.round((Date.now() - INICIO) / 1000), modelo: MODEL, local: roteador.localLigado, localModelo: LOCAL_MODEL, notas: indice.notas, trechos: indice.chunks.length, indexado: indice.atualizado });
+const statusAtual = () => ({ uptimeS: Math.round((Date.now() - INICIO) / 1000), modelo: MODEL, local: roteador.localLigado, localModelo: LOCAL_MODEL, reserva: reserva.ativa ? reserva.model : null, notas: indice.notas, trechos: indice.chunks.length, indexado: indice.atualizado });
 const ctxRegras = { status: statusAtual, resumo: dias => resumoUso(DATA_DIR, dias) };
 
 function planoBRegras(trechos, erroNuvem) {
@@ -149,9 +153,26 @@ async function perguntar(conv, texto, { onDelta = () => {}, onPensando = () => {
         erro = e.message; modelo = MODEL;
         console.error('[jarvis] erro no chat (nuvem):', erro);
         if (emitiu || signal?.aborted) resposta = e.parcial || '';
-        else { // Plano B fixo: resposta por regras, sem IA e sem custo. Nunca outro serviço pago.
-          resposta = planoBRegras(trechos, erro); onDelta(resposta);
-          dec = { ...dec, rota: 'plano-b-regras', motivo: 'plano-b-nuvem-falhou' }; modelo = 'regras';
+        else {
+          let feito = false;
+          // Reserva 9Router (opcional, desligada por padrão): health sem custo antes de tentar.
+          if (reserva.ativa && await reserva.saudavel()) {
+            onRota({ rota: 'reserva-9router', modelo: reserva.model });
+            let emitiuR = false;
+            try {
+              const r = await reserva.chat({ messages: mensagens, signal, onDelta: t => { emitiuR = true; onDelta(t); } });
+              ({ resposta, tokensIn, tokensOut } = r); modelo = reserva.model; feito = true;
+              dec = { ...dec, rota: 'reserva-9router', motivo: 'nuvem-falhou', erroNuvem: erro }; erro = null;
+            } catch (e2) {
+              console.warn('[roteador] reserva 9Router falhou:', e2.message);
+              if (emitiuR) { resposta = e2.parcial || ''; erro = e2.message; modelo = reserva.model; feito = true; dec = { ...dec, rota: 'reserva-9router', motivo: 'nuvem-falhou' }; }
+              else erro = `${erro} | ${e2.message}`;
+            }
+          }
+          if (!feito) { // Plano B fixo: resposta por regras, sem IA e sem custo. Nunca outro serviço pago.
+            resposta = planoBRegras(trechos, erro); onDelta(resposta);
+            dec = { ...dec, rota: 'plano-b-regras', motivo: 'plano-b-nuvem-falhou' }; modelo = 'regras';
+          }
         }
       }
     }
@@ -163,7 +184,7 @@ async function perguntar(conv, texto, { onDelta = () => {}, onPensando = () => {
   await salvarConv(conv);
   await registrarUso(DATA_DIR, { canal, rota: dec.rota, modelo, motivo: dec.motivo, nota: dec.nota ?? null, tipo: dec.tipo ?? null, nivel: guarda.nivel,
     ms, classif_ms: dec.classifMs ?? null, tokens_in: tokensIn, tokens_out: tokensOut, classif_tokens: dec.classifTokens ?? null,
-    ...(dec.erroLocal ? { erro_local: dec.erroLocal.slice(0, 200) } : {}), ...(erro ? { erro: erro.slice(0, 200) } : {}) });
+    ...(dec.erroLocal ? { erro_local: dec.erroLocal.slice(0, 200) } : {}), ...(dec.erroNuvem ? { erro_nuvem: dec.erroNuvem.slice(0, 200) } : {}), ...(erro ? { erro: erro.slice(0, 200) } : {}) });
   return { resposta, fontes, erro, rota: dec.rota, modelo };
 }
 

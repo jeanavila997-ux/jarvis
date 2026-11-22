@@ -4,8 +4,16 @@ import { readFile, writeFile, readdir, mkdir, rename } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { Indice } from './src/retrieval.mjs';
-import { montarPrompt } from './src/prompt.proposta.mjs';
+import { montarPrompt, montarPromptLocal } from './src/prompt.proposta.mjs';
+import { chatOllama } from './src/llm.mjs';
+import { nivelPorRegras, avisoGuarda } from './src/permissoes.mjs';
+import { classificar } from './src/classificador.mjs';
+import { criarRoteador } from './src/roteador.mjs';
+import { responderPorRegras } from './src/regras.mjs';
+import { registrarUso, resumoUso } from './src/uso.mjs';
+import { criarReserva } from './src/reserva9router.mjs';
 import { criarTelegram } from './src/telegram.mjs';
+import { criarRotinas } from './src/rotinas.mjs';
 import { auditar } from './src/auditoria.mjs';
 
 const PORT = Number(process.env.PORT || 3200);
@@ -19,6 +27,14 @@ const CONV_DIR = path.join(DATA_DIR, 'conversas');
 const MAX_HIST = Number(process.env.JARVIS_MAX_HISTORICO || 12);
 const TIMEOUT_MS = Number(process.env.JARVIS_TIMEOUT_MS || 180000);
 const INICIO = Date.now();
+// Roteador (Etapa 1). Local desligado se JARVIS_LOCAL_URL vazio.
+const LOCAL_URL = (process.env.JARVIS_LOCAL_URL || '').replace(/\/$/, '');
+const LOCAL_MODEL = process.env.JARVIS_LOCAL_MODEL || 'llama3.2:3b';
+const LOCAL_TIMEOUT_MS = Number(process.env.JARVIS_LOCAL_TIMEOUT_MS || 60000);
+const CLASSIF_TIMEOUT_MS = Number(process.env.JARVIS_CLASSIF_TIMEOUT_MS || 20000);
+// Reserva 9Router (PC do Jean): desligada por padrão; só depois que a nuvem falhar.
+const reserva = criarReserva({ ligada: process.env.NINEROUTER_RESERVA === '1', url: process.env.NINEROUTER_URL, model: process.env.NINEROUTER_MODEL,
+  apiKey: process.env.NINEROUTER_API_KEY, timeoutMs: Number(process.env.NINEROUTER_TIMEOUT_MS || 20000) });
 const PUBLIC = path.join(path.dirname(new URL(import.meta.url).pathname), 'public');
 
 const indice = new Indice(VAULT_DIR);
@@ -67,59 +83,110 @@ async function estatico(res, p) {
   } catch { json(res, 404, { erro: 'não encontrado' }); }
 }
 
-// Núcleo compartilhado (web e Telegram): busca no vault + Ollama Cloud. Sem fallback.
-async function perguntar(conv, texto, { onDelta = () => {}, onPensando = () => {}, signal } = {}) {
+// Núcleo compartilhado (web e Telegram): regras → Guarda → roteador (local/nuvem) → plano B.
+const roteador = criarRoteador({
+  localUrl: LOCAL_URL, localModel: LOCAL_MODEL,
+  classificar: texto => classificar(texto, { url: LOCAL_URL, model: LOCAL_MODEL, timeoutMs: CLASSIF_TIMEOUT_MS }),
+  log: m => console.warn('[roteador]', m),
+});
+const statusAtual = () => ({ uptimeS: Math.round((Date.now() - INICIO) / 1000), modelo: MODEL, local: roteador.localLigado, localModelo: LOCAL_MODEL, reserva: reserva.ativa ? reserva.model : null, notas: indice.notas, trechos: indice.chunks.length, indexado: indice.atualizado });
+const ctxRegras = { status: statusAtual, resumo: dias => resumoUso(DATA_DIR, dias) };
+
+function planoBRegras(trechos, erroNuvem) {
+  const notas = [...new Set(trechos.map(t => t.nota))].slice(0, 5);
+  return `Não consegui falar com a nuvem agora, e não uso fallback pago. Resposta por regras, sem IA:\n` +
+    (notas.length ? `As notas do vault mais ligadas à sua pergunta são: ${notas.map(n => `[[${n}]]`).join(' · ')}.` : 'Não achei notas do vault ligadas a essa pergunta.') +
+    `\nTente de novo em alguns minutos. (Motivo: ${erroNuvem})`;
+}
+
+async function perguntar(conv, texto, { onDelta = () => {}, onPensando = () => {}, onRota = () => {}, signal, canal = 'web' } = {}) {
+  const t0 = Date.now();
   conv.mensagens.push({ role: 'user', content: texto, ts: new Date().toISOString() });
   conv.atualizado = new Date().toISOString();
   await salvarConv(conv);
 
-  // Busca usa a pergunta atual + a anterior (para perguntas de continuação).
-  const usuarios = conv.mensagens.filter(m => m.role === 'user').slice(-2).map(m => m.content).join('\n');
-  const trechos = indice.buscar(usuarios);
-  const fontes = [...new Set(trechos.map(t => t.nota))];
-  const historico = conv.mensagens.filter(m => !m.erro && m.content).slice(-MAX_HIST).map(({ role, content }) => ({ role, content }));
-  const mensagens = [{ role: 'system', content: montarPrompt(trechos, agoraAcre()) }, ...historico];
+  // Guarda: nível decidido só por regras do PERMISSOES.md (nunca pelo classificador).
+  const guarda = nivelPorRegras(texto);
+  if (guarda.nivel >= 1) auditar(DATA_DIR, { canal, nivel: guarda.nivel, acao: 'pedido-detectado', motivo: guarda.motivos.join(', '), conversa: conv.id, resultado: 'sem-ferramenta-ligada' });
 
-  const ctrl = new AbortController();
-  let timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
-  signal?.addEventListener('abort', () => ctrl.abort());
-  let resposta = '', erro = null, pensou = false;
-  try {
-    if (!API_KEY) throw new Error('OLLAMA_API_KEY não configurada no .env do JARVIS.');
-    const r = await fetch(`${OLLAMA_URL}/api/chat`, {
-      method: 'POST', signal: ctrl.signal,
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${API_KEY}` },
-      body: JSON.stringify({ model: MODEL, messages: mensagens, stream: true }),
-    });
-    if (!r.ok) {
-      let msg = await r.text().catch(() => '');
-      try { msg = JSON.parse(msg).error || msg; } catch {}
-      throw new Error(`Ollama Cloud respondeu HTTP ${r.status}: ${String(msg).slice(0, 300)}`);
-    }
-    const dec = new TextDecoder(); let buf = '';
-    for await (const pedaco of r.body) {
-      buf += dec.decode(pedaco, { stream: true });
-      let i;
-      while ((i = buf.indexOf('\n')) >= 0) {
-        const linha = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
-        if (!linha) continue;
-        const j = JSON.parse(linha);
-        if (j.error) throw new Error(`Ollama Cloud: ${j.error}`);
-        if (j.message?.thinking && !pensou) { pensou = true; onPensando(); }
-        if (j.message?.content) { resposta += j.message.content; onDelta(j.message.content); }
+  let resposta = '', erro = null, fontes = [], modelo = 'regras', tokensIn = null, tokensOut = null;
+  let dec = { rota: 'regras', motivo: '', nivel: guarda.nivel };
+
+  const regra = guarda.nivel === 0 ? await responderPorRegras(texto, ctxRegras) : null;
+  if (regra) {
+    dec.motivo = `regra-${regra.regra}`; resposta = regra.texto;
+    onRota({ rota: 'regras', modelo: 'regras' }); onDelta(resposta);
+  } else {
+    // Busca usa a pergunta atual + a anterior (para perguntas de continuação).
+    const usuarios = conv.mensagens.filter(m => m.role === 'user').slice(-2).map(m => m.content).join('\n');
+    const trechos = indice.buscar(usuarios);
+    fontes = [...new Set(trechos.map(t => t.nota))];
+    const historico = conv.mensagens.filter(m => !m.erro && m.content).slice(-MAX_HIST).map(({ role, content }) => ({ role, content }));
+    dec = await roteador.decidir(texto, guarda);
+
+    if (dec.rota === 'local') {
+      onRota({ rota: 'local', modelo: LOCAL_MODEL });
+      let emitiu = false;
+      try {
+        const r = await chatOllama({ url: LOCAL_URL, model: LOCAL_MODEL, nome: 'Ollama local', signal, timeoutMs: LOCAL_TIMEOUT_MS, keepAlive: '30m',
+          options: { temperature: 0.4, num_predict: 300, num_ctx: 4096 },
+          messages: [{ role: 'system', content: montarPromptLocal(trechos, agoraAcre()) }, ...historico.slice(-6)],
+          onDelta: t => { emitiu = true; onDelta(t); } });
+        if (!r.resposta.trim()) throw new Error('modelo local terminou sem resposta');
+        ({ resposta, tokensIn, tokensOut } = r); modelo = LOCAL_MODEL;
+      } catch (e) {
+        if (emitiu || signal?.aborted) { resposta = e.parcial || ''; erro = e.message; modelo = LOCAL_MODEL; }
+        else { console.warn('[roteador] plano B: local falhou (' + e.message + ') → nuvem'); dec = { ...dec, rota: 'nuvem', motivo: 'plano-b-local-falhou', erroLocal: e.message }; }
       }
-      clearTimeout(timer); timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
     }
-    if (!resposta) throw new Error('O modelo terminou sem resposta.');
-  } catch (e) {
-    erro = e.name === 'AbortError' ? 'Tempo esgotado ou conexão interrompida com o Ollama Cloud.' : e.message;
-    console.error('[jarvis] erro no chat:', erro);
-  } finally { clearTimeout(timer); }
 
-  conv.mensagens.push({ role: 'assistant', content: resposta, ts: new Date().toISOString(), modelo: MODEL, fontes, ...(erro ? { erro } : {}) });
+    if (dec.rota === 'nuvem') {
+      onRota({ rota: 'nuvem', modelo: MODEL });
+      const mensagens = [{ role: 'system', content: montarPrompt(trechos, agoraAcre()) + avisoGuarda(guarda) }, ...historico];
+      let emitiu = false;
+      try {
+        if (!API_KEY) throw new Error('OLLAMA_API_KEY não configurada no .env do JARVIS.');
+        const r = await chatOllama({ url: OLLAMA_URL, apiKey: API_KEY, model: MODEL, messages: mensagens, signal, timeoutMs: TIMEOUT_MS, nome: 'Ollama Cloud',
+          onPensando, onDelta: t => { emitiu = true; onDelta(t); } });
+        if (!r.resposta) throw new Error('O modelo terminou sem resposta.');
+        ({ resposta, tokensIn, tokensOut } = r); modelo = MODEL;
+      } catch (e) {
+        erro = e.message; modelo = MODEL;
+        console.error('[jarvis] erro no chat (nuvem):', erro);
+        if (emitiu || signal?.aborted) resposta = e.parcial || '';
+        else {
+          let feito = false;
+          // Reserva 9Router (opcional, desligada por padrão): health sem custo antes de tentar.
+          if (reserva.ativa && await reserva.saudavel()) {
+            onRota({ rota: 'reserva-9router', modelo: reserva.model });
+            let emitiuR = false;
+            try {
+              const r = await reserva.chat({ messages: mensagens, signal, onDelta: t => { emitiuR = true; onDelta(t); } });
+              ({ resposta, tokensIn, tokensOut } = r); modelo = reserva.model; feito = true;
+              dec = { ...dec, rota: 'reserva-9router', motivo: 'nuvem-falhou', erroNuvem: erro }; erro = null;
+            } catch (e2) {
+              console.warn('[roteador] reserva 9Router falhou:', e2.message);
+              if (emitiuR) { resposta = e2.parcial || ''; erro = e2.message; modelo = reserva.model; feito = true; dec = { ...dec, rota: 'reserva-9router', motivo: 'nuvem-falhou' }; }
+              else erro = `${erro} | ${e2.message}`;
+            }
+          }
+          if (!feito) { // Plano B fixo: resposta por regras, sem IA e sem custo. Nunca outro serviço pago.
+            resposta = planoBRegras(trechos, erro); onDelta(resposta);
+            dec = { ...dec, rota: 'plano-b-regras', motivo: 'plano-b-nuvem-falhou' }; modelo = 'regras';
+          }
+        }
+      }
+    }
+  }
+
+  const ms = Date.now() - t0;
+  conv.mensagens.push({ role: 'assistant', content: resposta, ts: new Date().toISOString(), modelo, rota: dec.rota, fontes, ...(erro ? { erro } : {}) });
   conv.atualizado = new Date().toISOString();
   await salvarConv(conv);
-  return { resposta, fontes, erro };
+  await registrarUso(DATA_DIR, { canal, rota: dec.rota, modelo, motivo: dec.motivo, nota: dec.nota ?? null, tipo: dec.tipo ?? null, nivel: guarda.nivel,
+    ms, classif_ms: dec.classifMs ?? null, tokens_in: tokensIn, tokens_out: tokensOut, classif_tokens: dec.classifTokens ?? null,
+    ...(dec.erroLocal ? { erro_local: dec.erroLocal.slice(0, 200) } : {}), ...(dec.erroNuvem ? { erro_nuvem: dec.erroNuvem.slice(0, 200) } : {}), ...(erro ? { erro: erro.slice(0, 200) } : {}) });
+  return { resposta, fontes, erro, rota: dec.rota, modelo };
 }
 
 const novaConv = (titulo, extra = {}) => ({ id: randomUUID(), titulo: titulo.slice(0, 60), criado: new Date().toISOString(), atualizado: new Date().toISOString(), mensagens: [], ...extra });
@@ -140,7 +207,8 @@ async function chat(req, res) {
   res.on('close', () => { if (!res.writableEnded) ctrl.abort(); });
   enviar({ tipo: 'inicio', conversaId: conv.id, modelo: MODEL, fontes: [] });
   const { fontes, erro } = await perguntar(conv, texto, {
-    signal: ctrl.signal,
+    signal: ctrl.signal, canal: 'web',
+    onRota: r => enviar({ tipo: 'rota', ...r }),
     onPensando: () => enviar({ tipo: 'pensando' }),
     onDelta: t => enviar({ tipo: 'delta', texto: t }),
   });
@@ -156,7 +224,8 @@ const server = http.createServer(async (req, res) => {
     const p = url.pathname;
     // Proteção contra CSRF: todo POST precisa do cabeçalho X-Jarvis (força preflight CORS).
     if (req.method === 'POST' && req.headers['x-jarvis'] !== '1') return json(res, 403, { erro: 'cabeçalho X-Jarvis ausente' });
-    if (p === '/api/saude' && req.method === 'GET') return json(res, 200, { ok: true, versao: '0.1.0', modelo: MODEL, notas: indice.notas, trechos: indice.chunks.length, ignorados: indice.ignorados, indexado: indice.atualizado });
+    if (p === '/api/saude' && req.method === 'GET') return json(res, 200, { ok: true, versao: '0.2.0', modelo: MODEL, local: roteador.localLigado ? LOCAL_MODEL : null, notas: indice.notas, trechos: indice.chunks.length, ignorados: indice.ignorados, indexado: indice.atualizado });
+    if (p === '/api/custo' && req.method === 'GET') return json(res, 200, { hoje: await resumoUso(DATA_DIR, 1), semana: await resumoUso(DATA_DIR, 7) });
     if (p === '/api/conversas' && req.method === 'GET') return json(res, 200, await listarConvs());
     if (p.startsWith('/api/conversas/') && req.method === 'GET') {
       const id = p.split('/')[3];
@@ -165,6 +234,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/chat' && req.method === 'POST') return await chat(req, res);
     if (p === '/api/reindexar' && req.method === 'POST') return json(res, 200, await indice.reindexar());
+    if (p === '/api/rotinas' && req.method === 'GET') return json(res, 200, rotinas ? { ativo: true, ...rotinas.dados() } : { ativo: false });
     if (req.method === 'GET' && !p.startsWith('/api/')) return await estatico(res, p);
     json(res, 404, { erro: 'não encontrado' });
   } catch (e) {
@@ -172,11 +242,18 @@ const server = http.createServer(async (req, res) => {
     if (!res.headersSent) json(res, 500, { erro: e.message }); else res.end();
   }
 });
-server.listen(PORT, HOST, () => console.log(`[jarvis] ouvindo em ${HOST}:${PORT} · modelo ${MODEL} via ${OLLAMA_URL}`));
+server.listen(PORT, HOST, () => console.log(`[jarvis] ouvindo em ${HOST}:${PORT} · nuvem ${MODEL} via ${OLLAMA_URL} · local ${roteador.localLigado ? LOCAL_MODEL : 'desligado'}`));
 const telegram = criarTelegram({
   token: process.env.TELEGRAM_BOT_TOKEN, chatPermitido: process.env.TELEGRAM_ALLOWED_CHAT_ID, dataDir: DATA_DIR,
   perguntar, lerConv, novaConv, auditar: e => auditar(DATA_DIR, e),
-  status: () => ({ uptimeS: Math.round((Date.now() - INICIO) / 1000), modelo: MODEL, notas: indice.notas, trechos: indice.chunks.length, indexado: indice.atualizado }),
+  status: statusAtual, resumo: dias => resumoUso(DATA_DIR, dias),
 });
+const rotinas = telegram ? criarRotinas({
+  dataDir: DATA_DIR, chatPermitido: process.env.TELEGRAM_ALLOWED_CHAT_ID, enviar: telegram.enviar,
+  status: () => ({ modelo: MODEL, notas: indice.notas, trechos: indice.chunks.length }),
+  auditar: e => auditar(DATA_DIR, e), indice,
+}) : null;
+telegram?.ligarRotinas(rotinas);
 telegram?.iniciar();
-for (const s of ['SIGTERM', 'SIGINT']) process.on(s, () => { telegram?.parar(); server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 3000).unref(); });
+await rotinas?.ligar();
+for (const s of ['SIGTERM', 'SIGINT']) process.on(s, () => { telegram?.parar(); rotinas?.parar(); server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 3000).unref(); });

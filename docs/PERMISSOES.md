@@ -42,3 +42,10 @@
 
 ## O que muda em relação ao vault
 - [[Principios-e-Limites]] põe "ações destrutivas" no grupo do "sim". Esta proposta é **mais rígida**: apagar dados ou backups vira **nível 3** (só o Jean faz).
+
+## Como o código aplica (v0.2, Etapa 1)
+- O **nível é decidido só por regras fixas** em `src/permissoes.mjs` (lista `REGRAS_NIVEL`, derivada da matriz acima). O classificador local e o modelo **nunca** decidem permissão.
+- Na dúvida vale o mais alto: se o texto casa regras de níveis diferentes, fica o maior.
+- Nível 1+ → evento `pedido-detectado` em `data/auditoria.jsonl`, o pedido **não vai para o modelo local** (vai para a nuvem) e o prompt recebe um aviso da Guarda com o nível.
+- Como ainda não há ferramentas, nada é executado em nenhum nível. Ao ligar a primeira ferramenta, ela deve chamar `nivelPorRegras` + `Confirmacoes` antes de agir.
+- Mudou a matriz? Atualize `REGRAS_NIVEL` e rode `node --test test/` (casos de exemplo em `test/etapa1.test.mjs`).

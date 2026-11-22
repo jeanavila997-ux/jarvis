@@ -2,6 +2,8 @@
 import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import path from 'node:path';
 import { Confirmacoes, NIVEL } from './confirmacoes.mjs';
+import { TEXTO_PERMISSOES } from './regras.mjs';
+import { textoResumo } from './uso.mjs';
 
 const LIMITE = 4000;
 
@@ -22,7 +24,7 @@ export function textoPuro(md) {
   return md.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/__([^_]+)__/g, '$1').replace(/^#{1,6}\s+/gm, '').replace(/^```\w*\s*$/gm, '').trim();
 }
 
-export function criarTelegram({ token, chatPermitido, dataDir, perguntar, lerConv, novaConv, auditar, status, api: apiInjetada }) {
+export function criarTelegram({ token, chatPermitido, dataDir, perguntar, lerConv, novaConv, auditar, status, resumo = async () => ({ total: 0, dias: 1 }), api: apiInjetada }) {
   if (!token || !chatPermitido) { console.log('[telegram] desativado (TELEGRAM_BOT_TOKEN ou TELEGRAM_ALLOWED_CHAT_ID ausente)'); return null; }
   const permitido = String(chatPermitido);
   const dir = path.join(dataDir, 'telegram');
@@ -31,6 +33,7 @@ export function criarTelegram({ token, chatPermitido, dataDir, perguntar, lerCon
   const avisados = new Map(); // chat estranho → último aviso (ms)
   const filas = new Map();    // chat → promessa (processa em ordem)
   let rodando = false, ctrl = null, offset = 0, chats = {};
+  let rotinas = null;
 
   // Nunca logar a URL (contém o token).
   const api = apiInjetada || (async (metodo, corpo = {}, timeoutMs = 70000) => {
@@ -68,18 +71,60 @@ export function criarTelegram({ token, chatPermitido, dataDir, perguntar, lerCon
 
   const AJUDA = `Comandos:
 /nova — começa uma conversa nova
-/status — saúde do JARVIS (só leitura)
-/parar — cancela confirmações pendentes
+/status — saúde do JARVIS e da VPS (só leitura)
+/custo — uso e custo por rota (regras, local, nuvem)
+/permissoes — os 4 níveis de permissão
+/ajuda — esta lista
+/briefing — mostra o briefing da manhã agora (automático às 06:30)
+/revisao — revisão do dia e escreve o diário (automático às 21:00)
+/reindexar — reindexa o vault (nível 1: faz e avisa)
+/parar — cancela confirmações e pausa as rotinas
+/retomar — reativa as rotinas
 /testesim — mostra como funciona o botão de "sim" (não executa nada)`;
 
   async function comando(chatId, cmd) {
-    if (cmd === '/start') return enviar(chatId, `Olá, Jean. Sou o JARVIS, agora também no Telegram. Pode perguntar em texto; uso o vault do projeto e cito as notas.\n\nNesta versão eu só converso: não executo nada.\n\n${AJUDA}`);
+    if (cmd === '/start') return enviar(chatId, `Olá, Jean. Sou o JARVIS, agora também no Telegram. Pode perguntar em texto; uso o vault do projeto e cito as notas.\n\nFaço rotinas de nível 0-1: briefing 06:30, revisão 21:00 com diário, reindexação e status. Nada destrutivo — nível 2+ sempre pede seu "sim".\n\n${AJUDA}`);
     if (cmd === '/nova') { delete chats[chatId]; await gravar(arqChats, chats); return enviar(chatId, 'Conversa nova iniciada. O histórico anterior continua salvo.'); }
-    if (cmd === '/parar') { const n = confirmacoes.cancelarTodas(chatId); return enviar(chatId, n ? `Parado. ${n} confirmação(ões) pendente(s) cancelada(s).` : 'Parado. Não havia confirmações pendentes nem rotinas ativas.'); }
+    if (cmd === '/parar') {
+      const n = confirmacoes.cancelarTodas(chatId);
+      const p = rotinas ? await rotinas.pausar() : null;
+      return enviar(chatId, `Parado. ${n} confirmação(ões) cancelada(s); rotinas ${p ? 'pausadas' : 'não estavam ativas'}. /retomar para voltar.`);
+    }
+    if (cmd === '/retomar') {
+      if (!rotinas) return enviar(chatId, 'Rotinas não estão ativas nesta instalação.');
+      await rotinas.retomar(); const d = rotinas.dados();
+      return enviar(chatId, `Rotinas reativadas: briefing ${d.briefing} · revisão ${d.revisao} (Acre).`);
+    }
+    if (cmd === '/briefing') {
+      if (!rotinas) return enviar(chatId, 'Rotinas não estão ativas nesta instalação.');
+      auditar({ nivel: 0, acao: 'briefing-manual', alvo: 'telegram', resultado: 'ok' });
+      return enviar(chatId, await rotinas.textoBriefing());
+    }
+    if (cmd === '/revisao') {
+      if (!rotinas) return enviar(chatId, 'Rotinas não estão ativas nesta instalação.');
+      auditar({ nivel: 1, acao: 'revisao-manual', alvo: 'telegram', resultado: 'ok' });
+      return enviar(chatId, await rotinas.textoRevisao());
+    }
+    if (cmd === '/reindexar') {
+      if (!rotinas?.reindexar) return enviar(chatId, 'Rotinas não estão ativas nesta instalação.');
+      try {
+        const r = await rotinas.reindexar();
+        auditar({ nivel: 1, acao: 'reindexar-vault', alvo: 'vault', resultado: 'ok' });
+        return enviar(chatId, `✅ Vault reindexado (${r}).`);
+      } catch (e) {
+        auditar({ nivel: 1, acao: 'reindexar-vault', alvo: 'vault', resultado: 'erro', erro: e.message });
+        return enviar(chatId, `⚠️ Falhou: ${e.message}`);
+      }
+    }
+    if (cmd === '/custo' || cmd === '/custos') return enviar(chatId, textoResumo(await resumo(1)) + '\n\n' + textoResumo(await resumo(7)));
+    if (cmd === '/permissoes') return enviar(chatId, TEXTO_PERMISSOES);
+    if (cmd === '/ajuda' || cmd === '/help') return enviar(chatId, AJUDA);
     if (cmd === '/status') {
       const s = status(); const h = Math.floor(s.uptimeS / 3600), m = Math.floor(s.uptimeS % 3600 / 60);
       const idx = s.indexado ? new Date(s.indexado).toLocaleString('pt-BR', { timeZone: 'America/Rio_Branco' }) : '—';
-      return enviar(chatId, `JARVIS no ar há ${h}h${String(m).padStart(2, '0')}min\nModelo: ${s.modelo} (Ollama Cloud, sem fallback)\nVault: ${s.notas} notas, ${s.trechos} trechos (indexado ${idx}, Acre)\nConfirmações pendentes: ${confirmacoes.pendentes(chatId)}`);
+      const d = rotinas ? rotinas.dados() : null;
+      const vps = rotinas ? (await rotinas.vpsLinha()) : '';
+      return enviar(chatId, `JARVIS no ar há ${h}h${String(m).padStart(2, '0')}min\nNuvem: ${s.modelo} (Ollama Cloud, sem fallback pago)\nModelo local: ${s.local ? `ligado (${s.localModelo})` : 'desligado'}\nReserva 9Router: ${s.reserva ? `ligada (${s.reserva})` : 'desligada'}\nVault: ${s.notas} notas, ${s.trechos} trechos (indexado ${idx}, Acre)\nRotinas: ${d ? (d.pausado ? `PAUSADAS (briefing ${d.briefing} · revisão ${d.revisao})` : `briefing ${d.briefing} · revisão ${d.revisao} (Acre)`) : 'não ativas'}${vps ? '\n' + vps : ''}\nConfirmações pendentes: ${confirmacoes.pendentes(chatId)}\n\n${textoResumo(await resumo(1))}`);
     }
     if (cmd === '/testesim') {
       const c = confirmacoes.criar({ nivel: NIVEL.SIM, acao: 'teste do botão de confirmação', alvo: 'nenhum', canal: 'telegram', chatId });
@@ -94,10 +139,10 @@ export function criarTelegram({ token, chatPermitido, dataDir, perguntar, lerCon
     digitando(); const t = setInterval(digitando, 4500);
     try {
       const conv = await convDoChat(chatId, texto);
-      const { resposta, fontes, erro } = await perguntar(conv, texto);
+      const { resposta, fontes, erro, rota } = await perguntar(conv, texto, { canal: 'telegram' });
       let saida = textoPuro(resposta || '');
-      if (saida && fontes.length && !/fontes\s*:/i.test(saida)) saida += `\n\n📎 Notas consultadas: ${fontes.map(f => `[[${f}]]`).join(' · ')}`;
-      if (erro) saida = (saida ? saida + '\n\n' : '') + `⚠️ Erro do modelo: ${erro}\n(Não troquei para outro modelo: sem fallback.)`;
+      if (saida && rota !== 'regras' && rota !== 'plano-b-regras' && fontes.length && !/fontes\s*:/i.test(saida)) saida += `\n\n📎 Notas consultadas: ${fontes.map(f => `[[${f}]]`).join(' · ')}`;
+      if (erro && rota !== 'plano-b-regras') saida = (saida ? saida + '\n\n' : '') + `⚠️ Erro do modelo: ${erro}\n(Sem fallback pago.)`;
       await enviar(chatId, saida || '⚠️ Resposta vazia.');
     } finally { clearInterval(t); }
   }
@@ -159,6 +204,8 @@ export function criarTelegram({ token, chatPermitido, dataDir, perguntar, lerCon
 
   return {
     tratarUpdate, confirmacoes,
+    ligarRotinas(r) { rotinas = r; },
+    enviar,
     async iniciar() {
       await carregarEstado();
       const me = await api('getMe').catch(e => ({ ok: false, description: e.message }));

@@ -83,6 +83,7 @@ async function enviar(texto) {
       while ((i = buf.indexOf('\n')) >= 0) {
         const ev = JSON.parse(buf.slice(0, i)); buf = buf.slice(i + 1);
         if (ev.tipo === 'inicio') { conversaId = ev.conversaId; fontes = ev.fontes; $('#modelo').textContent = ev.modelo; }
+        else if (ev.tipo === 'rota') $('#modelo').textContent = ev.rota === 'nuvem' ? ev.modelo : `${ev.modelo} · ${ev.rota}`;
         else if (ev.tipo === 'fontes') fontes = ev.fontes;
         else if (ev.tipo === 'pensando' && !resp) c.innerHTML = '<span class="pensando">Pensando</span>';
         else if (ev.tipo === 'delta') { resp += ev.texto; c.innerHTML = md(resp); msgs.scrollTop = msgs.scrollHeight; }

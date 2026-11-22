@@ -4,7 +4,7 @@
 name: jarvis
 services:
   jarvis:
-    image: node:22-alpine
+    image: node:22.23.5-alpine
     restart: unless-stopped
     user: "1000:1000"
     working_dir: /app

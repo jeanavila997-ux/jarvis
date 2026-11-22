@@ -5,3 +5,4 @@ data/
 vault/
 node_modules/
 *.bak*
+.build.log

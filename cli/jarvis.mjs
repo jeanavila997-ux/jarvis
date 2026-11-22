@@ -9,6 +9,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
 
 export const VERSAO = '0.2.0';
 export const URL_LOCAL = 'http://127.0.0.1:3200';
@@ -42,7 +43,7 @@ Opções:
   --url URL            Sobrescreve o endereço
   --user USUARIO       Usuário do basic-auth (VPS, Traefik)
   --json               Saída em JSON (bom para script)
-  --timeout MS         Tempo máximo (padrão: 20s nas leituras, 180s no chat)
+  --timeout MS         Tempo máximo, número positivo (padrão: 20s nas leituras, 180s no chat)
   --conversa UUID      Continua uma conversa já existente
   --no-color           Sem cores (também respeita a variável NO_COLOR)
   -h, --help           Esta ajuda
@@ -67,8 +68,12 @@ Alvos:
   local  ${URL_LOCAL}   (sem senha, no seu PC)
   vps    ${URL_VPS}   (HTTPS + basic-auth)
 
-A senha nunca é impressa. Prefira JARVIS_PASS ou "jarvis config" (arquivo com
-permissão restrita). Não passe senha na linha de comando: ela aparece no histórico.
+A senha nunca é impressa. Use JARVIS_PASS ou "jarvis config" (arquivo com
+permissão restrita). A flag --pass/--password é recusada: a senha apareceria
+no histórico do terminal.
+
+O CLI roda no Node 18 ou mais novo (fetch nativo). O servidor (server.mjs)
+pede Node 22 — por isso o campo engines do package.json continua ">=22".
 
 Variáveis de ambiente (ganham da config; as flags ganham das variáveis):
   JARVIS_URL  JARVIS_USER  JARVIS_PASS  JARVIS_TARGET  JARVIS_CONFIG  JARVIS_TIMEOUT_MS
@@ -106,7 +111,6 @@ export function parseArgs(argv) {
     target: null,
     url: null,
     user: null,
-    pass: null,
     json: false,
     noColor: false,
     timeout: null,
@@ -128,8 +132,10 @@ export function parseArgs(argv) {
     if (a === '--target' || a === '-t') { out.target = obrigatorio(args, a); continue; }
     if (a === '--url') { out.url = obrigatorio(args, a); continue; }
     if (a === '--user') { out.user = obrigatorio(args, a); continue; }
-    if (a === '--pass' || a === '--password') { out.pass = obrigatorio(args, a); continue; }
-    if (a === '--timeout') { out.timeout = Number(obrigatorio(args, a)); continue; }
+    if (a === '--pass' || a === '--password' || a.startsWith('--pass=') || a.startsWith('--password=')) {
+      throw new ErroCli('A flag --pass/--password foi recusada porque a senha apareceria no histórico do terminal. Use a variável JARVIS_PASS ou "jarvis config".', 2);
+    }
+    if (a === '--timeout') { out.timeout = validarTimeout(obrigatorio(args, a), '--timeout'); continue; }
     if (a === '--conversa' || a === '--conversa-id') { out.conversa = obrigatorio(args, a); continue; }
     if (a.startsWith('--')) throw new ErroCli(`Opção desconhecida: ${a}. Use --help.`, 2);
     pos.push(a);
@@ -147,17 +153,26 @@ export function parseArgs(argv) {
   if (out.target && out.target !== 'local' && out.target !== 'vps') {
     throw new ErroCli(`--target deve ser "local" ou "vps" (recebi "${out.target}").`, 2);
   }
-  if (out.timeout != null && !Number.isFinite(out.timeout)) {
-    throw new ErroCli('--timeout deve ser um número em milissegundos.', 2);
-  }
   return out;
 }
 
 function obrigatorio(args, flag) {
-  if (!args.length || String(args[0]).startsWith('-')) {
+  if (!args.length) throw new ErroCli(`A opção ${flag} precisa de um valor.`, 2);
+  const prox = String(args[0]);
+  // Aceita números negativos (ex.: --timeout -5) para recusá-los depois com a mensagem certa.
+  if (prox.startsWith('-') && !/^-?\d+(\.\d+)?$/.test(prox)) {
     throw new ErroCli(`A opção ${flag} precisa de um valor.`, 2);
   }
   return args.shift();
+}
+
+export function validarTimeout(n, origem = '--timeout') {
+  if (n == null || n === '') return null;
+  const v = Number(n);
+  if (!Number.isFinite(v) || v <= 0) {
+    throw new ErroCli(`${origem} deve ser um número positivo em milissegundos.`, 2);
+  }
+  return v;
 }
 
 /* ------------------------------ config ----------------------------- */
@@ -182,47 +197,193 @@ export function configVazia() {
   };
 }
 
-export async function carregarConfig(arquivo = caminhoConfig()) {
+export async function carregarConfig(arquivo = caminhoConfig(), opts = {}) {
   try {
     const bruto = JSON.parse(await readFile(arquivo, 'utf8'));
     const base = configVazia();
-    return {
+    const vpsIn = bruto.targets?.vps || {};
+    const montado = {
       target: bruto.target === 'vps' ? 'vps' : 'local',
       targets: {
         local: { ...base.targets.local, ...(bruto.targets?.local || {}), url: bruto.targets?.local?.url || bruto.urlLocal || URL_LOCAL },
         vps: {
           ...base.targets.vps,
-          ...(bruto.targets?.vps || {}),
-          url: bruto.targets?.vps?.url || bruto.urlVps || URL_VPS,
-          user: bruto.targets?.vps?.user || bruto.user || 'jean',
-          ...(bruto.targets?.vps?.pass || bruto.pass ? { pass: bruto.targets?.vps?.pass || bruto.pass } : {}),
+          ...vpsIn,
+          url: vpsIn.url || bruto.urlVps || URL_VPS,
+          user: vpsIn.user || bruto.user || 'jean',
+          ...(vpsIn.pass || bruto.pass ? { pass: vpsIn.pass || bruto.pass } : {}),
+          ...(vpsIn.passDpapi ? { passDpapi: vpsIn.passDpapi } : {}),
         },
       },
     };
+    const plataforma = opts.plataforma ?? protecaoConfig.plataforma();
+    return await revelarSenhasConfig(montado, plataforma);
   } catch (e) {
     if (e && e.code === 'ENOENT') return configVazia();
+    if (e instanceof ErroCli) throw e;
     throw new ErroCli(`Não consegui ler a config em ${arquivo}: ${e.message}`, 1);
   }
 }
 
 export function redigirConfig(cfg) {
   const c = structuredClone(cfg);
-  for (const t of Object.values(c.targets || {})) {
-    if (t && t.pass) t.pass = '***';
-  }
-  if (c.pass) c.pass = '***';
+  const esconder = o => {
+    if (!o || typeof o !== 'object') return;
+    if (o.pass) o.pass = '***';
+    if (o.passDpapi) o.passDpapi = '***';
+  };
+  for (const t of Object.values(c.targets || {})) esconder(t);
+  esconder(c);
   return c;
 }
 
-export async function salvarConfig(cfg, arquivo = caminhoConfig()) {
+// Ganchos trocáveis nos testes (no Windows real: icacls + DPAPI).
+export const protecaoConfig = {
+  plataforma: () => process.platform,
+  protegerAcl: (...a) => protegerAclWindows(...a),
+  cifrarDpapi: (...a) => cifrarSenhaDpapi(...a),
+  decifrarDpapi: (...a) => decifrarSenhaDpapi(...a),
+};
+
+export function spawnSemShell(comando, args, { input = '', timeoutMs = 15000, env } = {}) {
+  return new Promise((resolve, reject) => {
+    const filho = spawn(comando, args, {
+      shell: false,
+      windowsHide: true,
+      env: env ? { ...process.env, ...env } : process.env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const out = [], err = [];
+    filho.stdout.on('data', d => out.push(d));
+    filho.stderr.on('data', d => err.push(d));
+    if (input) filho.stdin.write(input);
+    filho.stdin.end();
+    const t = setTimeout(() => { try { filho.kill(); } catch {} reject(new Error(`timeout ao executar ${comando}`)); }, timeoutMs);
+    filho.on('error', e => { clearTimeout(t); reject(e); });
+    filho.on('close', code => {
+      clearTimeout(t);
+      const stdout = Buffer.concat(out).toString('utf8');
+      const stderr = Buffer.concat(err).toString('utf8');
+      if (code !== 0) reject(new Error((stderr || stdout || `exit ${code}`).trim()));
+      else resolve(stdout);
+    });
+  });
+}
+
+function exePowershell() {
+  const root = process.env.SystemRoot || process.env.windir || 'C:\\Windows';
+  return path.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+}
+
+export async function protegerAclWindows(caminho, { usuario, executar } = {}) {
+  const user = usuario || process.env.USERNAME || os.userInfo().username;
+  if (!user) throw new Error('USERNAME ausente: não consigo restringir o ACL com icacls.');
+  const run = executar || spawnSemShell;
+  // Sem shell: o nome do usuário vai como argumento, não como %USERNAME%.
+  await run('icacls.exe', [path.resolve(caminho), '/inheritance:r', '/grant:r', `${user}:F`]);
+}
+
+export async function cifrarSenhaDpapi(senha, { executar } = {}) {
+  const run = executar || spawnSemShell;
+  const script = [
+    '$ErrorActionPreference = "Stop"',
+    '$plain = [Console]::In.ReadToEnd()',
+    '$secure = ConvertTo-SecureString -String $plain -AsPlainText -Force',
+    'ConvertFrom-SecureString -SecureString $secure',
+  ].join('; ');
+  const out = await run(exePowershell(), ['-NoProfile', '-NonInteractive', '-Command', script], { input: String(senha) });
+  const blob = out.trim();
+  if (!blob) throw new Error('DPAPI não devolveu o blob.');
+  return blob;
+}
+
+export async function decifrarSenhaDpapi(blob, { executar } = {}) {
+  const run = executar || spawnSemShell;
+  const script = [
+    '$ErrorActionPreference = "Stop"',
+    '$enc = [Console]::In.ReadToEnd().Trim()',
+    '$secure = ConvertTo-SecureString -String $enc',
+    '$bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)',
+    'try { [Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }',
+  ].join('; ');
+  const out = await run(exePowershell(), ['-NoProfile', '-NonInteractive', '-Command', script], { input: String(blob) });
+  return out.replace(/\r?\n$/, '');
+}
+
+async function prepararConfigParaDisco(cfg, plataforma) {
+  const out = structuredClone(cfg);
+  if (plataforma !== 'win32') return out;
+  for (const t of Object.values(out.targets || {})) {
+    if (!t || !t.pass) continue;
+    try {
+      t.passDpapi = await protecaoConfig.cifrarDpapi(t.pass);
+      delete t.pass;
+    } catch {
+      // Fallback: texto puro, mas o arquivo/pasta ficam com ACL do icacls.
+    }
+  }
+  return out;
+}
+
+async function revelarSenhasConfig(cfg, plataforma) {
+  const out = structuredClone(cfg);
+  for (const t of Object.values(out.targets || {})) {
+    if (!t || !t.passDpapi) continue;
+    if (plataforma !== 'win32') continue;
+    try {
+      t.pass = await protecaoConfig.decifrarDpapi(t.passDpapi);
+    } catch (e) {
+      throw new ErroCli(`Não consegui decifrar a senha guardada com DPAPI: ${e.message}. Rode "jarvis config" de novo neste Windows, na mesma conta.`, 1);
+    }
+  }
+  return out;
+}
+
+export async function salvarConfig(cfg, arquivo = caminhoConfig(), opts = {}) {
+  const plataforma = opts.plataforma ?? protecaoConfig.plataforma();
   const dir = path.dirname(arquivo);
   await mkdir(dir, { recursive: true });
-  try { await chmod(dir, 0o700); } catch { /* Windows pode ignorar */ }
+  const paraDisco = await prepararConfigParaDisco(cfg, plataforma);
   const tmp = arquivo + '.tmp';
-  await writeFile(tmp, JSON.stringify(cfg, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+  await writeFile(tmp, JSON.stringify(paraDisco, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
   await rename(tmp, arquivo);
-  try { await chmod(arquivo, 0o600); } catch { /* Windows pode ignorar */ }
+  if (plataforma === 'win32') {
+    try { await protecaoConfig.protegerAcl(dir); } catch { /* ainda tentamos o arquivo */ }
+    await protecaoConfig.protegerAcl(arquivo);
+  } else {
+    try { await chmod(dir, 0o700); } catch { /* ignore */ }
+    try { await chmod(arquivo, 0o600); } catch { /* ignore */ }
+  }
   return arquivo;
+}
+
+export function ehLoopback(url) {
+  let u;
+  try { u = new URL(url); } catch { return false; }
+  const h = (u.hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
+  return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '0:0:0:0:0:0:0:1';
+}
+
+export function avisoTlsInseguro(env = process.env) {
+  if (String(env.NODE_TLS_REJECT_UNAUTHORIZED) === '0') {
+    return 'Aviso: NODE_TLS_REJECT_UNAUTHORIZED=0 desliga a verificação do certificado TLS. Isso facilita um ataque de interceptação. Só use em teste, e nunca com a senha da VPS.';
+  }
+  return null;
+}
+
+export function validarUrlDestino({ target, url, user, pass }) {
+  let u;
+  try { u = new URL(url); } catch { throw new ErroCli(`URL inválida: ${url}`, 2); }
+  const http = u.protocol === 'http:';
+  const loopback = ehLoopback(url);
+  const temCred = Boolean(user || pass);
+  if (http && target === 'vps' && !loopback) {
+    throw new ErroCli(`O alvo vps exige HTTPS (recebi ${url}). Basic-auth em HTTP vazaria a senha na rede.`, 2);
+  }
+  if (http && temCred && !loopback) {
+    throw new ErroCli(`Com usuário ou senha, só aceito HTTP em loopback (127.0.0.1, localhost, ::1). Recebi ${url}.`, 2);
+  }
+  return true;
 }
 
 export function resolverDestino(args, cfg, env = process.env) {
@@ -233,8 +394,10 @@ export function resolverDestino(args, cfg, env = process.env) {
   const bloco = cfg.targets?.[target] || {};
   const url = (args.url || env.JARVIS_URL || bloco.url || (target === 'vps' ? URL_VPS : URL_LOCAL)).replace(/\/$/, '');
   const user = args.user || env.JARVIS_USER || bloco.user || '';
-  const pass = args.pass || env.JARVIS_PASS || bloco.pass || '';
-  return { target, url, user, pass };
+  const pass = env.JARVIS_PASS || bloco.pass || '';
+  const destino = { target, url, user, pass };
+  validarUrlDestino(destino);
+  return destino;
 }
 
 /* ------------------------------ HTTP ------------------------------- */
@@ -256,6 +419,9 @@ export function mensagemErroRede(e, url) {
   const textos = cadeia.map(x => String(x.message || '')).join(' | ');
   if (nome === 'AbortError' || code === 'ABORT_ERR' || /timeout|aborted/i.test(textos)) {
     return `O JARVIS em ${url} não respondeu a tempo (timeout). Tente de novo, ou use --timeout.`;
+  }
+  if (/redirect/i.test(textos)) {
+    return `O JARVIS em ${url} respondeu com um redirecionamento, e o CLI não segue redirects (para não encaminhar a senha do basic-auth).`;
   }
   const offline = ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'ENETUNREACH', 'EHOSTUNREACH', 'ECONNRESET']
     .find(c => c === code || textos.includes(c));
@@ -284,6 +450,8 @@ export function interpretarHttp(status, corpo, url) {
   return new ErroCli(`O JARVIS respondeu HTTP ${status} em ${url}${erro ? `: ${erro}` : '.'}`, 1, { http: status });
 }
 
+export const OPCOES_FETCH = { redirect: 'error' };
+
 function cabecalhos({ user, pass, json = true, post = false }) {
   const h = { accept: 'application/json' };
   if (json) h['content-type'] = 'application/json';
@@ -307,6 +475,7 @@ export async function requisitar(destino, { metodo = 'GET', caminho, corpo, time
       headers: cabecalhos({ user: destino.user, pass: destino.pass, post: metodo !== 'GET' }),
       body: corpo == null ? undefined : JSON.stringify(corpo),
       signal: ctrl.signal,
+      ...OPCOES_FETCH,
     });
     const tipo = r.headers.get('content-type') || '';
     if (tipo.includes('ndjson')) return r;
@@ -395,6 +564,7 @@ export async function enviarChat(destino, { mensagem, conversaId, timeout, onEve
       headers: cabecalhos({ user: destino.user, pass: destino.pass, post: true }),
       body: JSON.stringify({ mensagem, ...(conversaId ? { conversaId } : {}) }),
       signal: ctrl.signal,
+      ...OPCOES_FETCH,
     });
     const tipo = r.headers.get('content-type') || '';
     if (!r.ok) {
@@ -573,9 +743,11 @@ async function cmdChat(destino, args, out, io) {
   if (args.json) throw new ErroCli('O modo chat interativo não combina com --json. Use "jarvis ask --json".', 2);
   let conversaId = args.conversa || null;
   const cor = out.cor;
+  const stdin = io?.stdin || stdinFd;
+  const stdout = io?.stdout || stdoutFd;
   out.escrever(cor.bold(`JARVIS ${VERSAO}`) + cor.gray(` · ${destino.target} · ${destino.url}`));
   out.escrever(cor.dim('Digite a pergunta ou um comando com /  ·  /nova  /id  /sair  ·  Ctrl+C para encerrar'));
-  const rl = io?.criarRl?.() || createInterface({ input: io?.stdin || stdinFd, output: io?.stdout || stdoutFd, terminal: true });
+  const rl = io?.criarRl?.() || createInterface({ input: stdin, output: stdout, terminal: Boolean(stdout.isTTY) });
   const perguntarSimNao = async (enunciado) => {
     const r = (await rl.question(cor.yellow(enunciado) + ' ')).trim().toLowerCase();
     return r === 's' || r === 'sim' || r === 'y' || r === 'yes';
@@ -602,21 +774,21 @@ async function cmdChat(destino, args, out, io) {
         out.meta(conversaId ? `conversa ${conversaId}` : 'ainda não há conversa (mande uma mensagem).');
         continue;
       }
-      process.stdout.write(cor.green('jarvis> '));
+      out.stream(cor.green('jarvis> '));
       const resultado = await enviarChat(destino, {
         mensagem: texto,
         conversaId,
         timeout: args.timeout ?? TIMEOUT_CHAT_MS,
         onEvento: ev => {
-          if (ev.tipo === 'delta' && ev.texto) process.stdout.write(ev.texto);
+          if (ev.tipo === 'delta' && ev.texto) out.stream(ev.texto);
         },
       });
       if (resultado.conversaId) conversaId = resultado.conversaId;
-      if (!resultado.texto) process.stdout.write('');
-      process.stdout.write('\n');
+      if (!resultado.texto) out.stream('');
+      out.stream('\n');
       if (resultado.fontes?.length) out.meta('fontes: ' + resultado.fontes.join(' · '));
       if (resultado.erro) out.aviso('erro: ' + resultado.erro);
-      if (detectaPedidoConfirmacao(resultado) && stdinFd.isTTY) {
+      if (detectaPedidoConfirmacao(resultado) && stdin.isTTY) {
         out.aviso('O texto parece pedir um "sim". No servidor de hoje, a confirmação de nível 2 só executa no Telegram; aqui isso vira a próxima mensagem desta conversa.');
         const sim = await perguntarSimNao('Enviar "sim"? [s/N]');
         const msg = sim ? 'sim' : 'não';
@@ -624,15 +796,15 @@ async function cmdChat(destino, args, out, io) {
           const cancelar = await perguntarSimNao('Enviar "não" para cancelar? [s/N]');
           if (!cancelar) continue;
         }
-        process.stdout.write(cor.green('jarvis> '));
+        out.stream(cor.green('jarvis> '));
         const r2 = await enviarChat(destino, {
           mensagem: msg,
           conversaId,
           timeout: args.timeout ?? TIMEOUT_CHAT_MS,
-          onEvento: ev => { if (ev.tipo === 'delta' && ev.texto) process.stdout.write(ev.texto); },
+          onEvento: ev => { if (ev.tipo === 'delta' && ev.texto) out.stream(ev.texto); },
         });
         if (r2.conversaId) conversaId = r2.conversaId;
-        process.stdout.write('\n');
+        out.stream('\n');
       }
     }
   } finally {
@@ -642,8 +814,10 @@ async function cmdChat(destino, args, out, io) {
 }
 
 async function cmdReindexar(destino, args, out, io) {
-  if (stdinFd.isTTY && !args.json) {
-    const rl = io?.criarRl?.() || createInterface({ input: stdinFd, output: stdoutFd });
+  const stdin = io?.stdin || stdinFd;
+  const stdout = io?.stdout || stdoutFd;
+  if (stdin.isTTY && !args.json) {
+    const rl = io?.criarRl?.() || createInterface({ input: stdin, output: stdout, terminal: Boolean(stdout.isTTY) });
     try {
       const r = (await rl.question('Isso só reconstrói o índice do vault (POST /api/reindexar). Continuar? [s/N] ')).trim().toLowerCase();
       if (r !== 's' && r !== 'sim') {
@@ -674,7 +848,7 @@ async function cmdConfig(args, out, io, env = process.env) {
   const bloco = atual.targets[alvo] || {};
   let url = args.url || bloco.url || (alvo === 'vps' ? URL_VPS : URL_LOCAL);
   let user = args.user || bloco.user || (alvo === 'vps' ? 'jean' : '');
-  let pass = args.pass || env.JARVIS_PASS || bloco.pass || '';
+  let pass = env.JARVIS_PASS || bloco.pass || '';
 
   if (interativo && !args.json) {
     const rl = io?.criarRl?.() || createInterface({ input: io?.stdin || stdinFd, output: io?.stdout || stdoutFd });
@@ -783,7 +957,15 @@ export async function executar(argv, { env = process.env, stdin = stdinFd, stdou
   }
 
   try {
-    if (args.comando === 'config') return await cmdConfig(args, out, io, env);
+    const ioEfetivo = { stdin, stdout, stderr, ...io };
+    const avisoTls = avisoTlsInseguro(env);
+    if (avisoTls) out.aviso(avisoTls);
+
+    if (args.timeout == null && env.JARVIS_TIMEOUT_MS) {
+      args.timeout = validarTimeout(env.JARVIS_TIMEOUT_MS, 'JARVIS_TIMEOUT_MS');
+    }
+
+    if (args.comando === 'config') return await cmdConfig(args, out, ioEfetivo, env);
 
     if (!args.comando) {
       const piped = await lerStdinSePipe(stdin);
@@ -799,12 +981,6 @@ export async function executar(argv, { env = process.env, stdin = stdinFd, stdou
     if (args.comando === 'ask' && !args.texto) {
       const piped = await lerStdinSePipe(stdin);
       if (piped) args.texto = piped;
-    }
-
-    if (args.timeout == null && env.JARVIS_TIMEOUT_MS) {
-      const n = Number(env.JARVIS_TIMEOUT_MS);
-      if (!Number.isFinite(n)) throw new ErroCli('JARVIS_TIMEOUT_MS deve ser um número em milissegundos.', 2);
-      args.timeout = n;
     }
 
     const cfg = await carregarConfig(caminhoConfig(env));
@@ -833,11 +1009,11 @@ export async function executar(argv, { env = process.env, stdin = stdinFd, stdou
       case 'conversas':
         return await cmdGet(destino, args, out, '/api/conversas');
       case 'reindexar':
-        return await cmdReindexar(destino, args, out, io);
+        return await cmdReindexar(destino, args, out, ioEfetivo);
       case 'ask':
         return await cmdAsk(destino, args, out);
       case 'chat':
-        return await cmdChat(destino, args, out, io);
+        return await cmdChat(destino, args, out, ioEfetivo);
       default:
         throw new ErroCli(`Comando desconhecido: ${args.comando}`, 2);
     }

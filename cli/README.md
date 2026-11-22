@@ -28,7 +28,7 @@ A autenticidade na VPS é o **basic-auth do Traefik** (usuário `jean`). O proce
 
 ## Instalar (Windows e Linux)
 
-Precisa do **Node.js**. O CLI em si funciona no Node 18 ou mais novo (usa o `fetch` nativo). O servidor JARVIS continua pedindo Node 22.
+Precisa do **Node.js**. O CLI em si funciona no **Node 18 ou mais novo** (usa o `fetch` nativo). O servidor JARVIS continua pedindo Node 22 — por isso o campo `engines.node` do `package.json` fica `>=22`. A faixa do CLI está em `enginesCli.node` (`>=18`).
 
 ### No Windows (PowerShell), com o repositório na pasta do projeto
 
@@ -71,7 +71,7 @@ jarvis config show          # a senha aparece como ***
 O arquivo fica em:
 
 - Linux: `~/.config/jarvis/config.json` (pasta `700`, arquivo `600`)
-- Windows: `%APPDATA%\jarvis\config.json` (em geral `C:\Users\Jean\AppData\Roaming\jarvis\config.json`)
+- Windows: `%APPDATA%\jarvis\config.json` (em geral `C:\Users\Jean\AppData\Roaming\jarvis\config.json`). A pasta e o arquivo têm ACL só da sua conta (`icacls /inheritance:r /grant:r USUARIO:F`). A senha é cifrada com DPAPI (`ConvertFrom-SecureString`, campo `passDpapi`). Se o DPAPI falhar, a senha fica em texto no mesmo arquivo, ainda protegido pelo ACL.
 
 Você também pode apontar o arquivo com `JARVIS_CONFIG`.
 
@@ -89,7 +89,9 @@ $env:JARVIS_USER = "jean"
 $env:JARVIS_PASS = "…"
 ```
 
-Não commite esse arquivo, não jogue a senha no Git e não use `--pass` no dia a dia: a linha de comando entra no histórico. Se um dia a senha vazar, troque a do Traefik na VPS.
+Não commite esse arquivo e não jogue a senha no Git. A flag `--pass`/`--password` é recusada de propósito (a senha apareceria no histórico). Use `JARVIS_PASS` ou `jarvis config`. Se um dia a senha vazar, troque a do Traefik na VPS.
+
+O CLI recusa `http://` no alvo `vps` e em qualquer URL com usuário/senha, salvo loopback (`127.0.0.1`, `localhost`, `::1`). Os pedidos HTTP usam `redirect: 'error'`, para o basic-auth não ir junto num redirecionamento. Se `NODE_TLS_REJECT_UNAUTHORIZED=0`, o CLI avisa: isso desliga a verificação do certificado.
 
 ## Exemplos
 

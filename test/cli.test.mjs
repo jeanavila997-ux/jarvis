@@ -10,7 +10,8 @@ import { fileURLToPath } from 'node:url';
 import {
   parseArgs, caminhoConfig, carregarConfig, salvarConfig, redigirConfig,
   resolverDestino, detectaPedidoConfirmacao, formatarSaude, mensagemErroRede,
-  executar, VERSAO, URL_LOCAL, URL_VPS, querCor,
+  executar, VERSAO, URL_LOCAL, URL_VPS, querCor, validarTimeout, ehLoopback,
+  validarUrlDestino, avisoTlsInseguro, OPCOES_FETCH, protecaoConfig, ErroCli,
 } from '../cli/jarvis.mjs';
 
 const CLI = fileURLToPath(new URL('../cli/jarvis.mjs', import.meta.url));
@@ -156,6 +157,25 @@ describe('parseArgs', () => {
     const a = parseArgs(['config', 'show']);
     assert.equal(a.comando, 'config');
     assert.equal(a.configShow, true);
+  });
+  it('recusa --pass e --password (use JARVIS_PASS ou jarvis config)', () => {
+    for (const argv of [['--pass', 'vazou-xyz', 'health'], ['--password', 'vazou-xyz', 'health'], ['--pass=vazou-xyz', 'health']]) {
+      assert.throws(() => parseArgs(argv), e => {
+        assert.equal(e instanceof ErroCli, true);
+        assert.match(e.message, /JARVIS_PASS/);
+        assert.match(e.message, /jarvis config/);
+        assert.doesNotMatch(e.message, /vazou-xyz/);
+        return true;
+      });
+    }
+  });
+  it('timeout deve ser um número positivo', () => {
+    assert.throws(() => parseArgs(['--timeout', '0', 'health']), /positivo/);
+    assert.throws(() => parseArgs(['--timeout', '-5', 'health']), /positivo/);
+    assert.throws(() => parseArgs(['--timeout', 'abc', 'health']), /positivo/);
+    assert.equal(parseArgs(['--timeout', '1500', 'health']).timeout, 1500);
+    assert.equal(validarTimeout('20', 'JARVIS_TIMEOUT_MS'), 20);
+    assert.throws(() => validarTimeout('0', 'JARVIS_TIMEOUT_MS'), /JARVIS_TIMEOUT_MS/);
   });
 });
 
@@ -354,5 +374,156 @@ describe('HTTP de mentira', () => {
     });
     assert.equal(code, 0, saida.err);
     assert.deepEqual(JSON.parse(saida.out).instaladas, ['demo']);
+  });
+});
+
+describe('segurança da URL e TLS', () => {
+  const cfg = { target: 'local', targets: { local: { url: URL_LOCAL }, vps: { url: URL_VPS, user: 'jean' } } };
+
+  it('ehLoopback reconhece 127.0.0.1, localhost e ::1', () => {
+    assert.equal(ehLoopback('http://127.0.0.1:3200'), true);
+    assert.equal(ehLoopback('http://localhost:3200'), true);
+    assert.equal(ehLoopback('http://[::1]:3200'), true);
+    assert.equal(ehLoopback('http://example.com'), false);
+  });
+
+  it('recusa http no alvo vps (host que não é loopback)', () => {
+    assert.throws(
+      () => resolverDestino({ target: 'vps', url: 'http://example.com' }, cfg, {}),
+      /alvo vps exige HTTPS/,
+    );
+    assert.throws(
+      () => validarUrlDestino({ target: 'vps', url: 'http://72.62.11.116:3200', user: '', pass: '' }),
+      /HTTPS/,
+    );
+  });
+
+  it('recusa http com credenciais fora do loopback', () => {
+    assert.throws(
+      () => validarUrlDestino({ target: 'local', url: 'http://example.com', user: 'jean', pass: 'x' }),
+      /só aceito HTTP em loopback/,
+    );
+    // loopback com senha é permitido (JARVIS local)
+    assert.equal(validarUrlDestino({ target: 'local', url: 'http://127.0.0.1:3200', user: 'jean', pass: 'x' }), true);
+    // vps em https ok
+    assert.equal(validarUrlDestino({ target: 'vps', url: URL_VPS, user: 'jean', pass: 'x' }), true);
+  });
+
+  it('avisa se NODE_TLS_REJECT_UNAUTHORIZED=0', () => {
+    const msg = avisoTlsInseguro({ NODE_TLS_REJECT_UNAUTHORIZED: '0' });
+    assert.match(msg, /NODE_TLS_REJECT_UNAUTHORIZED=0/);
+    assert.equal(avisoTlsInseguro({}), null);
+  });
+});
+
+describe('redirect e flags recusadas (processo)', () => {
+  it('fetch usa redirect: error', () => {
+    assert.equal(OPCOES_FETCH.redirect, 'error');
+  });
+
+  it('não segue redirecionamento e não encaminha Basic auth', async () => {
+    let chegouNoDestino = false;
+    let authNoDestino = null;
+    const dest = http.createServer((req, res) => {
+      chegouNoDestino = true;
+      authNoDestino = req.headers.authorization || null;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, vazou: true }));
+    });
+    await new Promise(r => dest.listen(0, '127.0.0.1', r));
+    const destPort = dest.address().port;
+    const origem = http.createServer((req, res) => {
+      res.writeHead(302, { location: `http://127.0.0.1:${destPort}/api/saude` });
+      res.end();
+    });
+    await new Promise(r => origem.listen(0, '127.0.0.1', r));
+    try {
+      const r = await rodar(['health', '--url', `http://127.0.0.1:${origem.address().port}`, '--user', 'jean'], {
+        env: { JARVIS_PASS: 'segredo-redirect' },
+      });
+      assert.notEqual(r.code, 0, r.stdout + r.stderr);
+      assert.equal(chegouNoDestino, false);
+      assert.equal(authNoDestino, null);
+      assert.match(r.stderr, /redirecionamento|redirect/i);
+      assert.doesNotMatch(r.stdout + r.stderr, /segredo-redirect/);
+    } finally {
+      await new Promise((res, rej) => origem.close(e => e ? rej(e) : res()));
+      await new Promise((res, rej) => dest.close(e => e ? rej(e) : res()));
+    }
+  });
+
+  it('o processo recusa --pass e não imprime a senha', async () => {
+    const r = await rodar(['health', '--pass', 'vazou-na-linha']);
+    assert.equal(r.code, 2);
+    assert.match(r.stderr, /JARVIS_PASS/);
+    assert.match(r.stderr, /jarvis config/);
+    assert.doesNotMatch(r.stdout + r.stderr, /vazou-na-linha/);
+  });
+
+  it('JARVIS_TIMEOUT_MS=0 é recusado', async () => {
+    const r = await rodar(['health', '--url', 'http://127.0.0.1:59999'], { env: { JARVIS_TIMEOUT_MS: '0' } });
+    assert.equal(r.code, 2);
+    assert.match(r.stderr, /JARVIS_TIMEOUT_MS/);
+    assert.match(r.stderr, /positivo/);
+  });
+
+  it('http no alvo vps é recusado no processo', async () => {
+    const r = await rodar(['--target', 'vps', '--url', 'http://example.com', 'health']);
+    assert.equal(r.code, 2);
+    assert.match(r.stderr, /HTTPS/);
+  });
+
+  it('avisa NODE_TLS_REJECT_UNAUTHORIZED=0 no stderr', async () => {
+    const r = await rodar(['--help'], { env: { NODE_TLS_REJECT_UNAUTHORIZED: '0' } });
+    // --help sai antes do aviso; exercita health com url loopback sem servidor
+    const r2 = await rodar(['health', '--url', 'http://127.0.0.1:59999'], { env: { NODE_TLS_REJECT_UNAUTHORIZED: '0' } });
+    assert.match(r2.stderr, /NODE_TLS_REJECT_UNAUTHORIZED=0/);
+    assert.equal(r.code, 0);
+  });
+});
+
+describe('config Windows (ganchos)', () => {
+  it('redigirConfig esconde passDpapi', () => {
+    const visivel = JSON.stringify(redigirConfig({
+      targets: { vps: { url: URL_VPS, user: 'jean', pass: 'p', passDpapi: 'blob-secreto' } },
+    }));
+    assert.doesNotMatch(visivel, /blob-secreto/);
+    assert.match(visivel, /\*\*\*/);
+  });
+
+  it('no Windows cifra com DPAPI e chama icacls; se DPAPI falha, cai no texto puro', async () => {
+    await comConfigTemp(async (arquivo, dir) => {
+      const acls = [];
+      const orig = { ...protecaoConfig };
+      protecaoConfig.plataforma = () => 'win32';
+      protecaoConfig.cifrarDpapi = async senha => `DPAPI(${senha})`;
+      protecaoConfig.decifrarDpapi = async blob => String(blob).replace(/^DPAPI\((.*)\)$/, '$1');
+      protecaoConfig.protegerAcl = async caminho => { acls.push(caminho); };
+      try {
+        await salvarConfig({
+          target: 'vps',
+          targets: { local: { url: URL_LOCAL }, vps: { url: URL_VPS, user: 'jean', pass: 'segredo-win' } },
+        }, arquivo);
+        const bruto = JSON.parse(await readFile(arquivo, 'utf8'));
+        assert.equal(bruto.targets.vps.passDpapi, 'DPAPI(segredo-win)');
+        assert.equal(bruto.targets.vps.pass, undefined);
+        assert.ok(acls.some(c => c === arquivo));
+        assert.ok(acls.some(c => c === dir));
+        const lido = await carregarConfig(arquivo);
+        assert.equal(lido.targets.vps.pass, 'segredo-win');
+
+        protecaoConfig.cifrarDpapi = async () => { throw new Error('dpapi down'); };
+        const arq2 = arquivo + '.2.json';
+        await salvarConfig({
+          target: 'vps',
+          targets: { local: { url: URL_LOCAL }, vps: { url: URL_VPS, user: 'jean', pass: 'texto-puro' } },
+        }, arq2);
+        const fallback = JSON.parse(await readFile(arq2, 'utf8'));
+        assert.equal(fallback.targets.vps.pass, 'texto-puro');
+        assert.equal(fallback.targets.vps.passDpapi, undefined);
+      } finally {
+        Object.assign(protecaoConfig, orig);
+      }
+    });
   });
 });

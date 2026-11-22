@@ -11,6 +11,9 @@
   "engines": {
     "node": ">=22"
   },
+  "enginesCli": {
+    "node": ">=18"
+  },
   "bin": {
     "jarvis": "cli/jarvis.mjs"
   }

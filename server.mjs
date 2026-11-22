@@ -3,6 +3,7 @@ import http from 'node:http';
 import { readFile, writeFile, readdir, mkdir, rename } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Indice } from './src/retrieval.mjs';
 import { montarPrompt, montarPromptLocal } from './src/prompt.proposta.mjs';
 import { chatOllama } from './src/llm.mjs';
@@ -100,7 +101,7 @@ async function textoGithub() {
   partes.push('Escrita comum é nível 2 (pede "sim" no Telegram). delete_file e merge_pull_request são nível 3 e são proibidas.');
   return partes.join('\n');
 }
-const PUBLIC = path.join(path.dirname(new URL(import.meta.url).pathname), 'public');
+const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
 
 const indice = new Indice(VAULT_DIR);
 await mkdir(CONV_DIR, { recursive: true });

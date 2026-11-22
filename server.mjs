@@ -15,6 +15,7 @@ import { criarReserva } from './src/reserva9router.mjs';
 import { criarTelegram } from './src/telegram.mjs';
 import { criarRotinas } from './src/rotinas.mjs';
 import { criarSkills } from './src/skills.mjs';
+import { criarConfig } from './src/config.mjs';
 import { auditar } from './src/auditoria.mjs';
 import { exigeChaveOllama } from './src/http-unix.mjs';
 import { criarClienteHermes, interpretarPedidoHermes, textoHermesStatus } from './src/hermes.mjs';
@@ -38,6 +39,7 @@ const LOCAL_MODEL = process.env.JARVIS_LOCAL_MODEL || 'llama3.2:3b';
 const LOCAL_TIMEOUT_MS = Number(process.env.JARVIS_LOCAL_TIMEOUT_MS || 60000);
 const CLASSIF_TIMEOUT_MS = Number(process.env.JARVIS_CLASSIF_TIMEOUT_MS || 20000);
 // Reserva 9Router (PC do Jean): desligada por padrão; só depois que a nuvem falhar.
+// Rota corrente passa a ser reconstruída quando a aba Config muda a seção 9router.
 const reserva = criarReserva({ ligada: process.env.NINEROUTER_RESERVA === '1', url: process.env.NINEROUTER_URL, model: process.env.NINEROUTER_MODEL,
   apiKey: process.env.NINEROUTER_API_KEY, timeoutMs: Number(process.env.NINEROUTER_TIMEOUT_MS || 20000) });
 const hermes = criarClienteHermes({
@@ -111,6 +113,7 @@ if (!API_KEY && NUVEM_LOCAL) console.log('[jarvis] Ollama principal é local; ch
 
 const agoraAcre = () => new Date().toLocaleString('pt-BR', { timeZone: 'America/Rio_Branco', dateStyle: 'full', timeStyle: 'short' });
 const idValido = id => /^[a-f0-9-]{36}$/.test(id || '');
+const planoSimples = o => Boolean(o) && typeof o === 'object' && !Array.isArray(o);
 const arqConv = id => path.join(CONV_DIR, `${id}.json`);
 
 async function lerConv(id) { return JSON.parse(await readFile(arqConv(id), 'utf8')); }
@@ -155,9 +158,47 @@ const roteador = criarRoteador({
   classificar: texto => classificar(texto, { url: LOCAL_URL, model: LOCAL_MODEL, timeoutMs: CLASSIF_TIMEOUT_MS }),
   log: m => console.warn('[roteador]', m),
 });
-const statusAtual = () => ({ uptimeS: Math.round((Date.now() - INICIO) / 1000), modelo: MODEL, local: roteador.localLigado, localModelo: LOCAL_MODEL, nuvemLocal: NUVEM_LOCAL, reserva: reserva.ativa ? reserva.model : null, hermes: hermes.ativa ? (snapHermes || { ok: false, motivo: 'ainda-nao-medido' }) : null, nvidia: nvidia.ativa ? (snapNvidia || { ok: false, motivo: 'ainda-nao-medido' }) : null, github: dockerMcp.ativa ? (snapGithub || { ok: false, motivo: 'ainda-nao-medido' }) : null, notas: indice.notas, trechos: indice.chunks.length, indexado: indice.atualizado });
+const statusAtual = () => ({ uptimeS: Math.round((Date.now() - INICIO) / 1000), modelo: nuvem.model, local: roteador.localLigado, localModelo: LOCAL_MODEL, nuvemLocal: NUVEM_LOCAL, reserva: reservaRuntime.ativa ? reservaRuntime.model : null, hermes: hermes.ativa ? (snapHermes || { ok: false, motivo: 'ainda-nao-medido' }) : null, nvidia: nvidia.ativa ? (snapNvidia || { ok: false, motivo: 'ainda-nao-medido' }) : null, github: dockerMcp.ativa ? (snapGithub || { ok: false, motivo: 'ainda-nao-medido' }) : null, notas: indice.notas, trechos: indice.chunks.length, indexado: indice.atualizado });
 const ctxRegras = { status: statusAtual, resumo: dias => resumoUso(DATA_DIR, dias), textoHermes, textoNvidia, textoGithub };
 const skills = criarSkills({ dataDir: DATA_DIR, log: m => console.warn('[skills]', m) });
+// Config em camadas (Etapa 2): defaults → env → data/config.json. Segredos nunca voltam com valor.
+const cfg = criarConfig({
+  dataDir: DATA_DIR,
+  probes: {
+    nvidia: async () => {
+      if (!nvidia.ativa) return { ok: false, detalhe: 'desligado' };
+      const s = await nvidia.saudavel();
+      return { ok: s.ok, detalhe: s.ok ? `${(s.ferramentas || []).length} ferramentas` : (s.motivo || 'indisponível') };
+    },
+    github: async () => {
+      if (!dockerMcp.ativa) return { ok: false, detalhe: 'desligado' };
+      const s = await dockerMcp.saudavel();
+      return { ok: s.ok, detalhe: s.ok ? `${(s.ferramentas || []).length} ferramentas` : (s.motivo || 'indisponível') };
+    },
+  },
+});
+// Rota nuvem corrente e reserva 9Router passam a acompanhar data/config.json (sem restart):
+// boot usa env; POST /api/config chama recriarRotasRuntime() para atualizar os dois.
+let nuvem = { url: OLLAMA_URL, apiKey: API_KEY, model: MODEL, timeoutMs: TIMEOUT_MS };
+let reservaObj = reserva;
+let rotasSig = '';
+async function recriarRotasRuntime() {
+  const r = await cfg.resolvido();
+  nuvem = r.ollamaCloud;
+  const n = r.ninerouter;
+  const sig = JSON.stringify(n);
+  if (sig === rotasSig) return;
+  rotasSig = sig;
+  reservaObj = criarReserva({ ligada: n.ligada, url: n.url, model: n.model, apiKey: n.apiKey, timeoutMs: n.timeoutMs });
+}
+// Fachada com a mesma cara do objeto de antes (ativa/model/chat/saudavel), sempre o corrente.
+const reservaRuntime = {
+  get ativa() { return reservaObj?.ativa || false; },
+  get model() { return reservaObj?.model || null; },
+  saudavel() { return reservaObj ? reservaObj.saudavel() : Promise.resolve(false); },
+  chat(op) { if (!reservaObj) return Promise.resolve({ resposta: '', tokensIn: null, tokensOut: null }); return reservaObj.chat(op); },
+};
+recriarRotasRuntime().catch(e => console.warn('[config] mantendo env inicial:', e.message));
 
 function planoBRegras(trechos, erroNuvem) {
   const notas = [...new Set(trechos.map(t => t.nota))].slice(0, 5);
@@ -219,7 +260,7 @@ async function perguntar(conv, texto, { onDelta = () => {}, onPensando = () => {
     }
 
     if (dec.rota === 'nuvem') {
-      onRota({ rota: 'nuvem', modelo: MODEL });
+      onRota({ rota: 'nuvem', modelo: nuvem.model });
       const linhaSkills = await skills.listarLinha();
       const corposAtivas = await skills.corpos(conv.skills || []);
       const mensagens = [{ role: 'system', content: montarPrompt(trechos, agoraAcre()) + avisoGuarda(guarda)
@@ -227,12 +268,12 @@ async function perguntar(conv, texto, { onDelta = () => {}, onPensando = () => {
         + (corposAtivas.length ? '\n\n' + corposAtivas.join('\n\n') : '') }, ...historico];
       let emitiu = false;
       try {
-        if (!API_KEY && !NUVEM_LOCAL) throw new Error('OLLAMA_API_KEY não configurada no .env do JARVIS.');
-        const r = await chatOllama({ url: OLLAMA_URL, apiKey: API_KEY, model: MODEL, messages: mensagens, signal, timeoutMs: TIMEOUT_MS, nome: NUVEM_LOCAL ? 'Ollama local' : 'Ollama Cloud',
+        if (!nuvem.apiKey && !NUVEM_LOCAL) throw new Error('OLLAMA_API_KEY não configurada (.env ou aba Config).');
+        const r = await chatOllama({ url: nuvem.url, apiKey: nuvem.apiKey, model: nuvem.model, messages: mensagens, signal, timeoutMs: nuvem.timeoutMs, nome: NUVEM_LOCAL ? 'Ollama local' : 'Ollama Cloud',
           ...(NUVEM_LOCAL ? { think: THINK_LOCAL, keepAlive: '30m', options: { temperature: 0.4, num_predict: 300, num_ctx: Number(process.env.JARVIS_NUM_CTX || 4096) } } : {}),
           onPensando, onDelta: t => { emitiu = true; onDelta(t); } });
         if (!r.resposta) throw new Error('O modelo terminou sem resposta.');
-        ({ resposta, tokensIn, tokensOut } = r); modelo = MODEL;
+        ({ resposta, tokensIn, tokensOut } = r); modelo = nuvem.model;
       } catch (e) {
         erro = e.message; modelo = MODEL;
         console.error('[jarvis] erro no chat (nuvem):', erro);
@@ -240,16 +281,16 @@ async function perguntar(conv, texto, { onDelta = () => {}, onPensando = () => {
         else {
           let feito = false;
           // Reserva 9Router (opcional, desligada por padrão): health sem custo antes de tentar.
-          if (reserva.ativa && await reserva.saudavel()) {
-            onRota({ rota: 'reserva-9router', modelo: reserva.model });
+          if (reservaRuntime.ativa && await reservaRuntime.saudavel()) {
+            onRota({ rota: 'reserva-9router', modelo: reservaRuntime.model });
             let emitiuR = false;
             try {
-              const r = await reserva.chat({ messages: mensagens, signal, onDelta: t => { emitiuR = true; onDelta(t); } });
-              ({ resposta, tokensIn, tokensOut } = r); modelo = reserva.model; feito = true;
+              const r = await reservaRuntime.chat({ messages: mensagens, signal, onDelta: t => { emitiuR = true; onDelta(t); } });
+              ({ resposta, tokensIn, tokensOut } = r); modelo = reservaRuntime.model; feito = true;
               dec = { ...dec, rota: 'reserva-9router', motivo: 'nuvem-falhou', erroNuvem: erro }; erro = null;
             } catch (e2) {
               console.warn('[roteador] reserva 9Router falhou:', e2.message);
-              if (emitiuR) { resposta = e2.parcial || ''; erro = e2.message; modelo = reserva.model; feito = true; dec = { ...dec, rota: 'reserva-9router', motivo: 'nuvem-falhou' }; }
+              if (emitiuR) { resposta = e2.parcial || ''; erro = e2.message; modelo = reservaRuntime.model; feito = true; dec = { ...dec, rota: 'reserva-9router', motivo: 'nuvem-falhou' }; }
               else erro = `${erro} | ${e2.message}`;
             }
           }
@@ -288,7 +329,7 @@ async function chat(req, res) {
   const enviar = o => res.write(JSON.stringify(o) + '\n');
   const ctrl = new AbortController();
   res.on('close', () => { if (!res.writableEnded) ctrl.abort(); });
-  enviar({ tipo: 'inicio', conversaId: conv.id, modelo: MODEL, fontes: [] });
+  enviar({ tipo: 'inicio', conversaId: conv.id, modelo: nuvem.model, fontes: [] });
   const { fontes, erro } = await perguntar(conv, texto, {
     signal: ctrl.signal, canal: 'web',
     onRota: r => enviar({ tipo: 'rota', ...r }),
@@ -309,7 +350,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && req.headers['x-jarvis'] !== '1') return json(res, 403, { erro: 'cabeçalho X-Jarvis ausente' });
     if (p === '/api/saude' && req.method === 'GET') {
       await atualizarSnaps();
-      return json(res, 200, { ok: true, versao: '0.2.0', modelo: MODEL, local: roteador.localLigado ? LOCAL_MODEL : null, nuvemLocal: NUVEM_LOCAL, hermes: statusAtual().hermes, nvidia: statusAtual().nvidia, github: statusAtual().github, reserva: reserva.ativa, notas: indice.notas, trechos: indice.chunks.length, ignorados: indice.ignorados, indexado: indice.atualizado });
+      return json(res, 200, { ok: true, versao: '0.2.0', modelo: nuvem.model, local: roteador.localLigado ? LOCAL_MODEL : null, nuvemLocal: NUVEM_LOCAL, hermes: statusAtual().hermes, nvidia: statusAtual().nvidia, github: statusAtual().github, reserva: reservaRuntime.ativa, notas: indice.notas, trechos: indice.chunks.length, ignorados: indice.ignorados, indexado: indice.atualizado });
     }
     if (p === '/api/hermes' && req.method === 'GET') return json(res, 200, { texto: await textoHermes(), snap: snapHermes });
     if (p === '/api/nvidia' && req.method === 'GET') return json(res, 200, { texto: await textoNvidia(), snap: snapNvidia });
@@ -325,11 +366,35 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/reindexar' && req.method === 'POST') return json(res, 200, await indice.reindexar());
     if (p === '/api/rotinas' && req.method === 'GET') return json(res, 200, rotinas ? { ativo: true, ...rotinas.dados() } : { ativo: false });
     if (p === '/api/skills' && req.method === 'GET') return json(res, 200, { instaladas: await skills.listar() });
+    if (p === '/api/config' && req.method === 'GET') {
+      const l = await cfg.listar();
+      return json(res, 200, { ...l, mcp: { nvidia: nvidia.ativa ? (snapNvidia || { ok: false, motivo: 'ainda-nao-medido' }) : null, github: dockerMcp.ativa ? (snapGithub || { ok: false, motivo: 'ainda-nao-medido' }) : null } });
+    }
+    if (p === '/api/config' && req.method === 'POST') {
+      const b = await corpo(req);
+      try { await cfg.definir(b); } catch (e) { return json(res, e.status === 400 ? 400 : 500, { erro: e.message }); }
+      const campos = [];
+      const varrer = (o, prefixo) => { for (const k of Object.keys(o)) { if (planoSimples(o[k])) varrer(o[k], prefixo + k + '.'); else campos.push(prefixo + k); } };
+      varrer(b, '');
+      auditar(DATA_DIR, { canal: 'web', acao: 'config-editada', campos, resultado: 'ok' });
+      await recriarRotasRuntime();
+      return json(res, 200, await cfg.listar());
+    }
+    if (p === '/api/config/testar' && req.method === 'POST') {
+      const b = await corpo(req);
+      try { return json(res, 200, await cfg.testar(String(b.id || ''))); } catch (e) { return json(res, e.status === 400 ? 400 : 500, { erro: e.message }); }
+    }
+    if (p.startsWith('/api/skills/') && req.method === 'GET') {
+      const nome = decodeURIComponent(p.split('/')[3]);
+      const corpos = await skills.corpos([nome]);
+      if (!corpos.length) return json(res, 404, { erro: 'skill não encontrada' });
+      return json(res, 200, { nome, corpo: corpos[0] });
+    }
     if (req.method === 'GET' && !p.startsWith('/api/')) return await estatico(res, p);
     json(res, 404, { erro: 'não encontrado' });
   } catch (e) {
     console.error('[jarvis]', e);
-    if (!res.headersSent) json(res, 500, { erro: e.message }); else res.end();
+    if (!res.headersSent) json(res, e.status === 400 ? 400 : 500, { erro: e.message }); else res.end();
   }
 });
 server.listen(PORT, HOST, () => console.log(`[jarvis] ouvindo em ${HOST}:${PORT} · principal ${MODEL} via ${OLLAMA_URL} · local ${roteador.localLigado ? LOCAL_MODEL : 'desligado'} · hermes ${hermes.ativa ? 'ligado' : 'off'} · nvidia ${nvidia.ativa ? 'ligado' : 'off'}`));
@@ -342,7 +407,7 @@ const telegram = criarTelegram({
 });
 const rotinas = telegram ? criarRotinas({
   dataDir: DATA_DIR, chatPermitido: process.env.TELEGRAM_ALLOWED_CHAT_ID, enviar: telegram.enviar,
-  status: () => ({ modelo: MODEL, notas: indice.notas, trechos: indice.chunks.length }),
+  status: () => ({ modelo: nuvem.model, notas: indice.notas, trechos: indice.chunks.length }),
   auditar: e => auditar(DATA_DIR, e), indice,
 }) : null;
 telegram?.ligarRotinas(rotinas);

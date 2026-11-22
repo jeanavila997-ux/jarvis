@@ -24,8 +24,8 @@ export function validar(bruto) {
 export async function classificar(texto, { url, model, timeoutMs = 20000, keepAlive = '30m', chat = chatOllama } = {}) {
   const t0 = Date.now();
   const r = await chat({
-    url, model, stream: false, timeoutMs, keepAlive, format: FORMATO, nome: 'Ollama local (classificador)',
-    options: { temperature: 0, num_predict: 40, num_ctx: 4096 /* igual ao da resposta local: evita o Ollama recarregar o modelo */ },
+    url, model, stream: false, timeoutMs, keepAlive, format: FORMATO, think: process.env.JARVIS_THINK === '0' ? false : undefined, nome: 'Ollama local (classificador)',
+    options: { temperature: 0, num_predict: 40, num_ctx: Number(process.env.JARVIS_NUM_CTX || 4096) /* igual ao da resposta local: evita o Ollama recarregar o modelo */ },
     messages: [{ role: 'system', content: SISTEMA }, { role: 'user', content: String(texto).slice(0, 1500) }],
   });
   return { ...validar(r.resposta), ms: Date.now() - t0, tokensIn: r.tokensIn, tokensOut: r.tokensOut };

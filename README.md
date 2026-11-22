@@ -105,6 +105,13 @@ Só use modelos que estão dentro da assinatura. O JARVIS nunca troca de modelo 
 - Variáveis no `.env`: `TELEGRAM_BOT_TOKEN` e `TELEGRAM_ALLOWED_CHAT_ID`. Sem elas, o canal (e as rotinas) ficam desligados. O token do Hermes é outro, e os dois não podem usar o mesmo bot (daria erro 409).
 - Logs: `docker compose logs -f jarvis | grep telegram`
 
+## Skills (v0.3)
+- Formato Agent Skills: `data/skills/<nome>/SKILL.md` (frontmatter `name` + `description`). Instalação pelo hospedeiro (Hermes) — o JARVIS só **lê texto**; skills **nunca executam scripts**.
+- Comandos: `/skills` (lista com descrição) · `/skill <nome>` (ativa/desativa NA CONVERSA; `/skill off` tira todas). Ativação persiste no JSON da conversa (`conv.skills`). Sem conversa atual, o JARVIS pede para mandar uma mensagem antes.
+- Injeção: na rota nuvem, o SYSTEM recebe a lista dos nomes (via `listarLinha`) + o corpo completo das skills ativas (`corpos`). No modelo local (3B, 4096 ctx) skills não entram.
+- `/api/skills` (GET) lista as instaladas. Cache de leitura: 15 s — skill nova aparece sem restart.
+- Lote inicial (2026-11-22, 74 skills): obra/superpowers (15), mattpocock/skills (40), anthropics/skills (18), multica-ai/karpathy-skills (1) + `exemplo` (demo). Instalador com triagem anti-injection; excluídos: `claude-api` e `skill-creator` (corpo > 30 KB). A skill `exemplo` pode ser removida: `sudo rm -r /opt/apps/jarvis/data/skills/exemplo` (pedir ao Hermes). Muitas skills de dev presumem ferramentas que o JARVIS não tem — sem tools, são só texto e o prompt o impede de fingir execução.
+
 ## Segurança
 - Container sem portas publicadas, rede bridge própria, `read_only`, `cap_drop: ALL`, usuário 1000, 256 MB.
 - Basic-auth no Traefik; o hash fica no `.env`, a senha em texto só em `/root/.jarvis_credentials`.

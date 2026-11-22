@@ -1,0 +1,16 @@
+[Unit]
+Description=Unix socket proxy from JARVIS container to local Ollama (127.0.0.1:11434)
+After=network.target ollama.service
+Wants=ollama.service
+
+[Service]
+Type=simple
+ExecStartPre=/bin/mkdir -p /opt/apps/jarvis/run
+ExecStartPre=/bin/chown 1000:1000 /opt/apps/jarvis/run
+ExecStart=/usr/bin/socat UNIX-LISTEN:/opt/apps/jarvis/run/ollama.sock,fork,reuseaddr,unlink-early,mode=660,user=1000,group=1000 TCP:127.0.0.1:11434
+Restart=on-failure
+RestartSec=2
+# Sem portas TCP novas; o socket vive só no diretório montado no container.
+
+[Install]
+WantedBy=multi-user.target

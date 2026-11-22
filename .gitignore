@@ -6,3 +6,5 @@ vault/
 node_modules/
 *.bak*
 .build.log
+run/
+!.env.local.example

@@ -14,7 +14,11 @@ import { registrarUso, resumoUso } from './src/uso.mjs';
 import { criarReserva } from './src/reserva9router.mjs';
 import { criarTelegram } from './src/telegram.mjs';
 import { criarRotinas } from './src/rotinas.mjs';
+import { criarSkills } from './src/skills.mjs';
 import { auditar } from './src/auditoria.mjs';
+import { exigeChaveOllama } from './src/http-unix.mjs';
+import { criarClienteHermes, interpretarPedidoHermes, textoHermesStatus } from './src/hermes.mjs';
+import { criarClienteNvidia, criarClienteNvidiaMcp } from './src/nvidia.mjs';
 
 const PORT = Number(process.env.PORT || 3200);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -35,13 +39,54 @@ const CLASSIF_TIMEOUT_MS = Number(process.env.JARVIS_CLASSIF_TIMEOUT_MS || 20000
 // Reserva 9Router (PC do Jean): desligada por padrão; só depois que a nuvem falhar.
 const reserva = criarReserva({ ligada: process.env.NINEROUTER_RESERVA === '1', url: process.env.NINEROUTER_URL, model: process.env.NINEROUTER_MODEL,
   apiKey: process.env.NINEROUTER_API_KEY, timeoutMs: Number(process.env.NINEROUTER_TIMEOUT_MS || 20000) });
+const hermes = criarClienteHermes({
+  ligada: Boolean(process.env.HERMES_URL),
+  url: process.env.HERMES_URL || '',
+  apiKey: process.env.HERMES_API_KEY || '',
+});
+const nvidia = process.env.NVIDIA_MCP_URL
+  ? criarClienteNvidiaMcp({ ligada: process.env.NVIDIA_APP === '1', url: process.env.NVIDIA_MCP_URL })
+  : criarClienteNvidia({ ligada: process.env.NVIDIA_APP === '1', url: process.env.NVIDIA_PROXY_URL, token: process.env.NVIDIA_PROXY_TOKEN || '' });
+let snapHermes = null, snapNvidia = null;
+async function atualizarSnaps() {
+  if (hermes.ativa) snapHermes = await hermes.saudavel();
+  if (nvidia.ativa) snapNvidia = await nvidia.saudavel();
+}
+async function textoHermes() {
+  if (!hermes.ativa) return 'Hermes: desligado (defina HERMES_URL).';
+  const s = await hermes.saudavel(); snapHermes = s;
+  let tarefas = null;
+  if (s.ok && hermes.temChave) {
+    try { tarefas = await hermes.listarTarefas(); } catch (e) { return textoHermesStatus(s) + '\nTarefas: ' + e.message; }
+  } else if (s.ok && !hermes.temChave) {
+    return textoHermesStatus(s) + '\nListar tarefas exige HERMES_API_KEY (peça ao Grok Bot; não invento chave).';
+  }
+  return textoHermesStatus(s, tarefas);
+}
+async function textoNvidia() {
+  if (!nvidia.ativa) return 'nvidia-app: desligado (defina NVIDIA_APP=1 e NVIDIA_MCP_URL ou o proxy).';
+  const s = await nvidia.saudavel(); snapNvidia = s;
+  if (!s.ok) return `nvidia-app: indisponível (${s.motivo}). Só ferramentas de LEITURA são tentadas.`;
+  const partes = [`nvidia-app ok (leitura). Ferramentas permitidas: ${(s.ferramentas || nvidia.leitura || []).join(', ')}.`];
+  for (const nome of ['nvapp_client_get_driver_status', 'nvapp_client_get_laptop_features']) {
+    try {
+      const r = await nvidia.chamar(nome, {});
+      const txt = r?.result?.content?.map?.(c => c.text).filter(Boolean).join('\n') || JSON.stringify(r?.result?.structuredContent || r?.result || r);
+      partes.push(`${nome}: ${String(txt).slice(0, 800)}`);
+    } catch (e) { partes.push(`${nome}: ${e.message}`); }
+  }
+  return partes.join('\n');
+}
 const PUBLIC = path.join(path.dirname(new URL(import.meta.url).pathname), 'public');
 
 const indice = new Indice(VAULT_DIR);
 await mkdir(CONV_DIR, { recursive: true });
 const r = await indice.reindexar();
 console.log(`[jarvis] vault indexado: ${r.notas} notas, ${r.trechos} trechos, ${r.ignorados.length} ignorados`);
-if (!API_KEY) console.warn('[jarvis] AVISO: OLLAMA_API_KEY ausente — o chat vai mostrar erro.');
+const NUVEM_LOCAL = !exigeChaveOllama(OLLAMA_URL);
+const THINK_LOCAL = process.env.JARVIS_THINK === '1' ? true : process.env.JARVIS_THINK === '0' ? false : undefined;
+if (!API_KEY && !NUVEM_LOCAL) console.warn('[jarvis] AVISO: OLLAMA_API_KEY ausente — o chat na nuvem vai mostrar erro.');
+if (!API_KEY && NUVEM_LOCAL) console.log('[jarvis] Ollama principal é local; chave de nuvem não é necessária.');
 
 const agoraAcre = () => new Date().toLocaleString('pt-BR', { timeZone: 'America/Rio_Branco', dateStyle: 'full', timeStyle: 'short' });
 const idValido = id => /^[a-f0-9-]{36}$/.test(id || '');
@@ -89,8 +134,9 @@ const roteador = criarRoteador({
   classificar: texto => classificar(texto, { url: LOCAL_URL, model: LOCAL_MODEL, timeoutMs: CLASSIF_TIMEOUT_MS }),
   log: m => console.warn('[roteador]', m),
 });
-const statusAtual = () => ({ uptimeS: Math.round((Date.now() - INICIO) / 1000), modelo: MODEL, local: roteador.localLigado, localModelo: LOCAL_MODEL, reserva: reserva.ativa ? reserva.model : null, notas: indice.notas, trechos: indice.chunks.length, indexado: indice.atualizado });
-const ctxRegras = { status: statusAtual, resumo: dias => resumoUso(DATA_DIR, dias) };
+const statusAtual = () => ({ uptimeS: Math.round((Date.now() - INICIO) / 1000), modelo: MODEL, local: roteador.localLigado, localModelo: LOCAL_MODEL, nuvemLocal: NUVEM_LOCAL, reserva: reserva.ativa ? reserva.model : null, hermes: hermes.ativa ? (snapHermes || { ok: false, motivo: 'ainda-nao-medido' }) : null, nvidia: nvidia.ativa ? (snapNvidia || { ok: false, motivo: 'ainda-nao-medido' }) : null, notas: indice.notas, trechos: indice.chunks.length, indexado: indice.atualizado });
+const ctxRegras = { status: statusAtual, resumo: dias => resumoUso(DATA_DIR, dias), textoHermes, textoNvidia };
+const skills = criarSkills({ dataDir: DATA_DIR, log: m => console.warn('[skills]', m) });
 
 function planoBRegras(trechos, erroNuvem) {
   const notas = [...new Set(trechos.map(t => t.nota))].slice(0, 5);
@@ -112,11 +158,22 @@ async function perguntar(conv, texto, { onDelta = () => {}, onPensando = () => {
   let resposta = '', erro = null, fontes = [], modelo = 'regras', tokensIn = null, tokensOut = null;
   let dec = { rota: 'regras', motivo: '', nivel: guarda.nivel };
 
-  const regra = guarda.nivel === 0 ? await responderPorRegras(texto, ctxRegras) : null;
+  const pedHermes = hermes.ativa ? interpretarPedidoHermes(texto) : null;
+  if (pedHermes && pedHermes.nivel >= 2) {
+    dec.motivo = 'hermes-nivel2';
+    resposta = pedHermes.erro
+      ? `Pedido de nível 2 (${pedHermes.rotulo}), mas falta dado: ${pedHermes.erro}. Nada foi feito.`
+      : (canal === 'telegram'
+        ? `Ação de nível 2: ${pedHermes.rotulo}. Confirme no botão de sim (10 min, uso único).`
+        : `Isso é nível 2 (${pedHermes.rotulo}) e precisa do seu "sim" no Telegram. Nada foi feito daqui.`);
+    if (resposta) { onRota({ rota: 'regras', modelo: 'regras' }); onDelta(resposta); }
+  }
+
+  const regra = !resposta && guarda.nivel === 0 ? await responderPorRegras(texto, ctxRegras) : null;
   if (regra) {
     dec.motivo = `regra-${regra.regra}`; resposta = regra.texto;
     onRota({ rota: 'regras', modelo: 'regras' }); onDelta(resposta);
-  } else {
+  } else if (!resposta) {
     // Busca usa a pergunta atual + a anterior (para perguntas de continuação).
     const usuarios = conv.mensagens.filter(m => m.role === 'user').slice(-2).map(m => m.content).join('\n');
     const trechos = indice.buscar(usuarios);
@@ -129,7 +186,7 @@ async function perguntar(conv, texto, { onDelta = () => {}, onPensando = () => {
       let emitiu = false;
       try {
         const r = await chatOllama({ url: LOCAL_URL, model: LOCAL_MODEL, nome: 'Ollama local', signal, timeoutMs: LOCAL_TIMEOUT_MS, keepAlive: '30m',
-          options: { temperature: 0.4, num_predict: 300, num_ctx: 4096 },
+          think: THINK_LOCAL, options: { temperature: 0.4, num_predict: 300, num_ctx: Number(process.env.JARVIS_NUM_CTX || 4096) },
           messages: [{ role: 'system', content: montarPromptLocal(trechos, agoraAcre()) }, ...historico.slice(-6)],
           onDelta: t => { emitiu = true; onDelta(t); } });
         if (!r.resposta.trim()) throw new Error('modelo local terminou sem resposta');
@@ -142,11 +199,16 @@ async function perguntar(conv, texto, { onDelta = () => {}, onPensando = () => {
 
     if (dec.rota === 'nuvem') {
       onRota({ rota: 'nuvem', modelo: MODEL });
-      const mensagens = [{ role: 'system', content: montarPrompt(trechos, agoraAcre()) + avisoGuarda(guarda) }, ...historico];
+      const linhaSkills = await skills.listarLinha();
+      const corposAtivas = await skills.corpos(conv.skills || []);
+      const mensagens = [{ role: 'system', content: montarPrompt(trechos, agoraAcre()) + avisoGuarda(guarda)
+        + (linhaSkills ? '\n\n' + linhaSkills : '')
+        + (corposAtivas.length ? '\n\n' + corposAtivas.join('\n\n') : '') }, ...historico];
       let emitiu = false;
       try {
-        if (!API_KEY) throw new Error('OLLAMA_API_KEY não configurada no .env do JARVIS.');
-        const r = await chatOllama({ url: OLLAMA_URL, apiKey: API_KEY, model: MODEL, messages: mensagens, signal, timeoutMs: TIMEOUT_MS, nome: 'Ollama Cloud',
+        if (!API_KEY && !NUVEM_LOCAL) throw new Error('OLLAMA_API_KEY não configurada no .env do JARVIS.');
+        const r = await chatOllama({ url: OLLAMA_URL, apiKey: API_KEY, model: MODEL, messages: mensagens, signal, timeoutMs: TIMEOUT_MS, nome: NUVEM_LOCAL ? 'Ollama local' : 'Ollama Cloud',
+          ...(NUVEM_LOCAL ? { think: THINK_LOCAL, keepAlive: '30m', options: { temperature: 0.4, num_predict: 300, num_ctx: Number(process.env.JARVIS_NUM_CTX || 4096) } } : {}),
           onPensando, onDelta: t => { emitiu = true; onDelta(t); } });
         if (!r.resposta) throw new Error('O modelo terminou sem resposta.');
         ({ resposta, tokensIn, tokensOut } = r); modelo = MODEL;
@@ -224,7 +286,12 @@ const server = http.createServer(async (req, res) => {
     const p = url.pathname;
     // Proteção contra CSRF: todo POST precisa do cabeçalho X-Jarvis (força preflight CORS).
     if (req.method === 'POST' && req.headers['x-jarvis'] !== '1') return json(res, 403, { erro: 'cabeçalho X-Jarvis ausente' });
-    if (p === '/api/saude' && req.method === 'GET') return json(res, 200, { ok: true, versao: '0.2.0', modelo: MODEL, local: roteador.localLigado ? LOCAL_MODEL : null, notas: indice.notas, trechos: indice.chunks.length, ignorados: indice.ignorados, indexado: indice.atualizado });
+    if (p === '/api/saude' && req.method === 'GET') {
+      await atualizarSnaps();
+      return json(res, 200, { ok: true, versao: '0.2.0', modelo: MODEL, local: roteador.localLigado ? LOCAL_MODEL : null, nuvemLocal: NUVEM_LOCAL, hermes: statusAtual().hermes, nvidia: statusAtual().nvidia, reserva: reserva.ativa, notas: indice.notas, trechos: indice.chunks.length, ignorados: indice.ignorados, indexado: indice.atualizado });
+    }
+    if (p === '/api/hermes' && req.method === 'GET') return json(res, 200, { texto: await textoHermes(), snap: snapHermes });
+    if (p === '/api/nvidia' && req.method === 'GET') return json(res, 200, { texto: await textoNvidia(), snap: snapNvidia });
     if (p === '/api/custo' && req.method === 'GET') return json(res, 200, { hoje: await resumoUso(DATA_DIR, 1), semana: await resumoUso(DATA_DIR, 7) });
     if (p === '/api/conversas' && req.method === 'GET') return json(res, 200, await listarConvs());
     if (p.startsWith('/api/conversas/') && req.method === 'GET') {
@@ -235,6 +302,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/chat' && req.method === 'POST') return await chat(req, res);
     if (p === '/api/reindexar' && req.method === 'POST') return json(res, 200, await indice.reindexar());
     if (p === '/api/rotinas' && req.method === 'GET') return json(res, 200, rotinas ? { ativo: true, ...rotinas.dados() } : { ativo: false });
+    if (p === '/api/skills' && req.method === 'GET') return json(res, 200, { instaladas: await skills.listar() });
     if (req.method === 'GET' && !p.startsWith('/api/')) return await estatico(res, p);
     json(res, 404, { erro: 'não encontrado' });
   } catch (e) {
@@ -242,11 +310,13 @@ const server = http.createServer(async (req, res) => {
     if (!res.headersSent) json(res, 500, { erro: e.message }); else res.end();
   }
 });
-server.listen(PORT, HOST, () => console.log(`[jarvis] ouvindo em ${HOST}:${PORT} · nuvem ${MODEL} via ${OLLAMA_URL} · local ${roteador.localLigado ? LOCAL_MODEL : 'desligado'}`));
+server.listen(PORT, HOST, () => console.log(`[jarvis] ouvindo em ${HOST}:${PORT} · principal ${MODEL} via ${OLLAMA_URL} · local ${roteador.localLigado ? LOCAL_MODEL : 'desligado'} · hermes ${hermes.ativa ? 'ligado' : 'off'} · nvidia ${nvidia.ativa ? 'ligado' : 'off'}`));
+atualizarSnaps().catch(() => {});
 const telegram = criarTelegram({
   token: process.env.TELEGRAM_BOT_TOKEN, chatPermitido: process.env.TELEGRAM_ALLOWED_CHAT_ID, dataDir: DATA_DIR,
-  perguntar, lerConv, novaConv, auditar: e => auditar(DATA_DIR, e),
+  perguntar, lerConv, novaConv, salvarConv, skills, auditar: e => auditar(DATA_DIR, e),
   status: statusAtual, resumo: dias => resumoUso(DATA_DIR, dias),
+  hermes, nvidia, textoHermes, textoNvidia,
 });
 const rotinas = telegram ? criarRotinas({
   dataDir: DATA_DIR, chatPermitido: process.env.TELEGRAM_ALLOWED_CHAT_ID, enviar: telegram.enviar,
@@ -256,4 +326,4 @@ const rotinas = telegram ? criarRotinas({
 telegram?.ligarRotinas(rotinas);
 telegram?.iniciar();
 await rotinas?.ligar();
-for (const s of ['SIGTERM', 'SIGINT']) process.on(s, () => { telegram?.parar(); rotinas?.parar(); server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 3000).unref(); });
+for (const s of ['SIGTERM', 'SIGINT']) process.on(s, () => { telegram?.parar(); rotinas?.parar(); nvidia?.fechar?.().catch(() => {}); server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 3000).unref(); });

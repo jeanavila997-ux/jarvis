@@ -22,6 +22,7 @@ export const REGRAS_NIVEL = [
   [2, 'rodar comando', /\b(rod\w*|execut\w*)\b.{0,20}\b(comando|script|shell|terminal|ssh)\b/],
   [2, 'gastar dinheiro', /\b(compr(a|e|ar|ou|ando)|pag(a|ue|ar|ou|ando)|assin(a|e|ar|ou)|contrat(a|e|ar|ou))\b.{0,30}\b(plano|api|credito|assinatura|dominio|servidor|pix|boleto|cartao)\b|\bpix\b/],
   [2, 'escrever em banco/n8n', /\b(insir\w*|inser\w*|grav\w*|escrev\w*|atualiz\w*)\b.{0,30}\b(supabase|banco|tabela|n8n|planilha)\b/],
+  [2, 'alterar tarefa do Hermes', /\bhermes\b.{0,60}\b(paus\w*|retom\w*|dispr\w*|execut\w*|rod\w*|apag\w*|delet\w*|cancel\w*|cri\w*)\b|\b(paus\w*|retom\w*|dispr\w*|execut\w*|rod\w*|apag\w*|delet\w*|cancel\w*|cri\w*)\b.{0,60}\bhermes\b/],
   // Nível 1 · Faz e avisa (só coisas do próprio JARVIS)
   [1, 'anotar/lembrar/rascunho', /\b(anot\w*|lembr\w*\s+(de|que|me)|me\s+lembr\w*|salv\w*\s+(isso|essa|esta|uma\s+ideia)|rascunh\w*|diario|reindex\w*)\b/],
 ];

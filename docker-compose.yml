@@ -21,6 +21,12 @@ services:
       NINEROUTER_URL: ${NINEROUTER_URL:-}
       NINEROUTER_MODEL: ${NINEROUTER_MODEL:-}
       NINEROUTER_API_KEY: ${NINEROUTER_API_KEY:-}
+      HERMES_URL: ${HERMES_URL:-}
+      HERMES_API_KEY: ${HERMES_API_KEY:-}
+      NVIDIA_APP: ${NVIDIA_APP:-0}
+      NVIDIA_PROXY_URL: ${NVIDIA_PROXY_URL:-}
+      NVIDIA_PROXY_TOKEN: ${NVIDIA_PROXY_TOKEN:-}
+      NVIDIA_MCP_URL: ${NVIDIA_MCP_URL:-}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_ALLOWED_CHAT_ID: ${TELEGRAM_ALLOWED_CHAT_ID:-}
       HOST: 0.0.0.0
@@ -34,6 +40,8 @@ services:
       - ./public:/app/public:ro
       - ./vault:/app/vault:ro
       - ./data:/app/data
+      - ./run:/app/run
+      - ./scripts:/app/scripts:ro
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]

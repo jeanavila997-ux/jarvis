@@ -4,6 +4,7 @@ import path from 'node:path';
 import { Confirmacoes, NIVEL } from './confirmacoes.mjs';
 import { TEXTO_PERMISSOES } from './regras.mjs';
 import { textoResumo } from './uso.mjs';
+import { interpretarPedidoHermes } from './hermes.mjs';
 
 const LIMITE = 4000;
 
@@ -24,7 +25,7 @@ export function textoPuro(md) {
   return md.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/__([^_]+)__/g, '$1').replace(/^#{1,6}\s+/gm, '').replace(/^```\w*\s*$/gm, '').trim();
 }
 
-export function criarTelegram({ token, chatPermitido, dataDir, perguntar, lerConv, novaConv, auditar, status, resumo = async () => ({ total: 0, dias: 1 }), api: apiInjetada }) {
+export function criarTelegram({ token, chatPermitido, dataDir, perguntar, lerConv, novaConv, salvarConv, skills, auditar, status, resumo = async () => ({ total: 0, dias: 1 }), api: apiInjetada, hermes = null, nvidia = null, textoHermes = null, textoNvidia = null }) {
   if (!token || !chatPermitido) { console.log('[telegram] desativado (TELEGRAM_BOT_TOKEN ou TELEGRAM_ALLOWED_CHAT_ID ausente)'); return null; }
   const permitido = String(chatPermitido);
   const dir = path.join(dataDir, 'telegram');
@@ -80,9 +81,13 @@ export function criarTelegram({ token, chatPermitido, dataDir, perguntar, lerCon
 /reindexar — reindexa o vault (nível 1: faz e avisa)
 /parar — cancela confirmações e pausa as rotinas
 /retomar — reativa as rotinas
-/testesim — mostra como funciona o botão de "sim" (não executa nada)`;
+/skills — lista as skills instaladas (texto instrucional, nunca executam comandos)
+/skill <nome> — ativa/desativa a skill NESTA conversa (/skill off tira todas)
+/testesim — mostra como funciona o botão de "sim" (não executa nada)
+/hermes — status do Hermes (leitura); tarefas se houver chave
+/nvidia — status da GPU (nvidia-app, só leitura)`;
 
-  async function comando(chatId, cmd) {
+  async function comando(chatId, cmd, args = '') {
     if (cmd === '/start') return enviar(chatId, `Olá, Jean. Sou o JARVIS, agora também no Telegram. Pode perguntar em texto; uso o vault do projeto e cito as notas.\n\nFaço rotinas de nível 0-1: briefing 06:30, revisão 21:00 com diário, reindexação e status. Nada destrutivo — nível 2+ sempre pede seu "sim".\n\n${AJUDA}`);
     if (cmd === '/nova') { delete chats[chatId]; await gravar(arqChats, chats); return enviar(chatId, 'Conversa nova iniciada. O histórico anterior continua salvo.'); }
     if (cmd === '/parar') {
@@ -95,7 +100,29 @@ export function criarTelegram({ token, chatPermitido, dataDir, perguntar, lerCon
       await rotinas.retomar(); const d = rotinas.dados();
       return enviar(chatId, `Rotinas reativadas: briefing ${d.briefing} · revisão ${d.revisao} (Acre).`);
     }
+    if (cmd === '/skills' || cmd === '/skill') {
+      if (!skills || typeof salvarConv !== 'function') return enviar(chatId, 'Módulo de skills não está ativo nesta instalação.');
+      const lista = await skills.listar();
+      if (!lista.length) return enviar(chatId, 'Nenhuma skill instalada. O Hermes instala em data/skills/<nome>/SKILL.md na VPS.');
+      if (cmd === '/skills' || !args) return enviar(chatId, `Skills instaladas:\n${lista.map(s => `• ${s.nome} — ${s.descricao}`).join('\n')}\n\nAtiva na conversa com /skill <nome>.`);
+      const pedido = args.toLowerCase().split(/\s+/).filter(Boolean).map(a => a.replace(/^[\-\/]/, ''));
+      const convAtual = (chats[chatId] ? await lerConv(chats[chatId]).catch(() => null) : null);
+      if (!convAtual) return enviar(chatId, 'Mande uma mensagem primeiro (conversa atual), depois ative a skill com /skill <nome>.');
+      if (pedido[0] === 'off' || pedido[0] === 'nenhuma' || pedido[0] === 'todas') {
+        convAtual.skills = []; await salvarConv(convAtual);
+        return enviar(chatId, 'Skills desativadas nesta conversa.');
+      }
+      const desconhecidas = pedido.filter(n => !lista.some(s => s.nome === n));
+      if (desconhecidas.length) return enviar(chatId, `Skill não instalada: ${desconhecidas.join(', ')}. /skills mostra a lista.`);
+      const atuais = new Set(convAtual.skills || []);
+      if (atuais.has(pedido[0])) atuais.delete(pedido[0]); else for (const n of pedido) atuais.add(n);
+      convAtual.skills = [...atuais]; await salvarConv(convAtual);
+      return enviar(chatId, convAtual.skills.length
+        ? `Skills ativas nesta conversa: ${convAtual.skills.join(', ')}. O texto delas entra no prompt das próximas respostas.`
+        : 'Nenhuma skill ativa nesta conversa.');
+    }
     if (cmd === '/briefing') {
+
       if (!rotinas) return enviar(chatId, 'Rotinas não estão ativas nesta instalação.');
       auditar({ nivel: 0, acao: 'briefing-manual', alvo: 'telegram', resultado: 'ok' });
       return enviar(chatId, await rotinas.textoBriefing());
@@ -131,13 +158,41 @@ export function criarTelegram({ token, chatPermitido, dataDir, perguntar, lerCon
       return enviar(chatId, `Ação de nível 2 (exemplo):\n• Teste do botão de confirmação — nada será executado.\nExpira em 10 minutos. Um "sim" vale para uma ação só.`,
         { reply_markup: { inline_keyboard: [[{ text: '✅ Confirmar', callback_data: `cf:${c.id}` }, { text: '✖️ Cancelar', callback_data: `cc:${c.id}` }]] } });
     }
+    if (cmd === '/hermes') {
+      if (!textoHermes) return enviar(chatId, 'Hermes não está ligado nesta instalação (HERMES_URL).');
+      return enviar(chatId, await textoHermes());
+    }
+    if (cmd === '/nvidia') {
+      if (!textoNvidia) return enviar(chatId, 'nvidia-app não está ligado nesta instalação.');
+      return enviar(chatId, await textoNvidia());
+    }
     return enviar(chatId, `Comando desconhecido.\n\n${AJUDA}`);
+  }
+
+  async function pedidoHermesTelegram(chatId, texto) {
+    if (!hermes?.ativa) return false;
+    const ped = interpretarPedidoHermes(texto);
+    if (!ped || ped.nivel < 2) return false;
+    if (ped.erro) { await enviar(chatId, `Pedido de nível 2 (${ped.rotulo}), mas falta dado: ${ped.erro}. Nada foi feito.`); return true; }
+    const c = confirmacoes.criar({
+      nivel: NIVEL.SIM, acao: ped.rotulo, alvo: ped.id || '', canal: 'telegram', chatId,
+      executar: async () => {
+        const r = await hermes.executar(ped);
+        const detalhe = typeof r === 'string' ? r : JSON.stringify(r);
+        return `Feito: ${ped.rotulo}. ${String(detalhe).slice(0, 400)}`;
+      },
+    });
+    if (c.recusado) { await enviar(chatId, c.motivo); return true; }
+    await enviar(chatId, `Ação de nível 2:\n• ${ped.rotulo}\nExpira em 10 minutos. Um "sim" vale para uma ação só. Nada será feito antes da confirmação.`,
+      { reply_markup: { inline_keyboard: [[{ text: '✅ Confirmar', callback_data: `cf:${c.id}` }, { text: '✖️ Cancelar', callback_data: `cc:${c.id}` }]] } });
+    return true;
   }
 
   async function responder(chatId, texto) {
     const digitando = () => api('sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => {});
     digitando(); const t = setInterval(digitando, 4500);
     try {
+      if (await pedidoHermesTelegram(chatId, texto)) return;
       const conv = await convDoChat(chatId, texto);
       const { resposta, fontes, erro, rota } = await perguntar(conv, texto, { canal: 'telegram' });
       let saida = textoPuro(resposta || '');
@@ -170,7 +225,10 @@ export function criarTelegram({ token, chatPermitido, dataDir, perguntar, lerCon
     }
     if (!msg.text) return enviar(chatId, 'Por enquanto só entendo mensagens de texto.');
     const texto = msg.text.trim();
-    if (texto.startsWith('/')) return comando(chatId, texto.split(/[\s@]/)[0].toLowerCase());
+    if (texto.startsWith('/')) {
+      const bruto = texto.split(/\s+/)[0];
+      return comando(chatId, bruto.split(/[\s@]/)[0].toLowerCase(), texto.slice(bruto.length).trim());
+    }
     if (texto.length > 8000) return enviar(chatId, 'Mensagem longa demais (máx. 8000 caracteres).');
     return responder(chatId, texto);
   }

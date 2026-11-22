@@ -1,6 +1,7 @@
 // Cliente único de chat Ollama (local ou Cloud), com streaming NDJSON. Sem dependências.
+import { fetchUrl } from './http-unix.mjs';
 // Nunca loga a chave. Devolve também os contadores de tokens para o registro de uso.
-export async function chatOllama({ url, apiKey = '', model, messages, signal, timeoutMs = 180000, onDelta = () => {}, onPensando = () => {}, options, keepAlive, format, stream = true, nome = 'Ollama' }) {
+export async function chatOllama({ url, apiKey = '', model, messages, signal, timeoutMs = 180000, onDelta = () => {}, onPensando = () => {}, options, keepAlive, format, think, stream = true, nome = 'Ollama' }) {
   const ctrl = new AbortController();
   let timer = setTimeout(() => ctrl.abort(), timeoutMs);
   const abortar = () => ctrl.abort();
@@ -13,7 +14,8 @@ export async function chatOllama({ url, apiKey = '', model, messages, signal, ti
     if (options) corpo.options = options;
     if (keepAlive) corpo.keep_alive = keepAlive;
     if (format) corpo.format = format;
-    const r = await fetch(`${url}/api/chat`, { method: 'POST', signal: ctrl.signal, headers, body: JSON.stringify(corpo) });
+    if (think !== undefined) corpo.think = think;
+    const r = await fetchUrl(url, '/api/chat', { method: 'POST', signal: ctrl.signal, headers, body: JSON.stringify(corpo) });
     if (!r.ok) {
       let msg = await r.text().catch(() => '');
       try { msg = JSON.parse(msg).error || msg; } catch {}

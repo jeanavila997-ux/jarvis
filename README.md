@@ -126,3 +126,7 @@ Só use modelos que estão dentro da assinatura. O JARVIS nunca troca de modelo 
 5. **Ferramentas de leitura** (agenda, web) conforme a matriz `docs/PERMISSOES.md`; depois escrita com aprovação.
 6. **Memória**: embeddings locais e mais notas de diário.
 7. **Voz**: Whisper + TTS pt-BR.
+
+## Voicebox (TTS)
+
+Opcional e desligado por padrão (`VOICEBOX=0`). Detalhes em [docs/VOICEBOX.md](docs/VOICEBOX.md). No Telegram: `/voz`, `/voz <frase>` ou "responder em áudio". Prefere o Voicebox do PC quando o túnel estiver no ar; senão usa o da VPS (CPU).

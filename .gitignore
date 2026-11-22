@@ -10,3 +10,6 @@ node_modules/
 .build.log
 run/
 *.sock
+
+# Cópia local dos MCP (use .mcp.json.example). Pode ganhar tokens.
+.mcp.json

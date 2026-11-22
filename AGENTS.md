@@ -1,5 +1,7 @@
 # Regras para o Codex neste repositório
 
+Se estiver no Claude Code, veja também `CLAUDE.md`.
+
 Fale e escreva em **pt-BR**, no modo professor: explique o porquê, sem jargão solto. Este é o código do JARVIS, o assistente pessoal do Jean.
 
 ## O que é este projeto

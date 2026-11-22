@@ -1,0 +1,1 @@
+{ "name": "jarvis", "version": "0.2.0", "private": true, "type": "module", "description": "JARVIS (A.V.I.L.A.) v0.2 — assistente pessoal do Jean", "scripts": { "start": "node server.mjs", "test": "node --test test/*.test.mjs" }, "engines": { "node": ">=22" } }

@@ -1,0 +1,66 @@
+# JARVIS v0.1 — rede bridge própria, sem portas publicadas.
+# O Traefik (rede host) alcança o IP do container na porta 3200, com HTTPS + basic-auth.
+# Segredos: OLLAMA_API_KEY e JARVIS_BASICAUTH_USERS ficam no .env (chmod 600, fora do git).
+name: jarvis
+services:
+  jarvis:
+    image: node:22.23.5-alpine
+    restart: unless-stopped
+    user: "1000:1000"
+    working_dir: /app
+    command: ["node", "server.mjs"]
+    environment:
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:?defina OLLAMA_API_KEY no .env}
+      OLLAMA_URL: ${OLLAMA_URL:-https://ollama.com}
+      JARVIS_MODEL: ${JARVIS_MODEL:-glm-5.3-flash}
+      # Roteador (Etapa 1): modelo local no Ollama da VPS. Vazio = local desligado (tudo que não é regra vai para a nuvem).
+      JARVIS_LOCAL_URL: ${JARVIS_LOCAL_URL:-}
+      JARVIS_LOCAL_MODEL: ${JARVIS_LOCAL_MODEL:-llama3.2:3b}
+      # Reserva 9Router do PC (OpenAI-compatível). Desligada por padrão; só se a nuvem falhar.
+      NINEROUTER_RESERVA: ${NINEROUTER_RESERVA:-0}
+      NINEROUTER_URL: ${NINEROUTER_URL:-}
+      NINEROUTER_MODEL: ${NINEROUTER_MODEL:-}
+      NINEROUTER_API_KEY: ${NINEROUTER_API_KEY:-}
+      HERMES_URL: ${HERMES_URL:-}
+      HERMES_API_KEY: ${HERMES_API_KEY:-}
+      NVIDIA_APP: ${NVIDIA_APP:-0}
+      NVIDIA_PROXY_URL: ${NVIDIA_PROXY_URL:-}
+      NVIDIA_PROXY_TOKEN: ${NVIDIA_PROXY_TOKEN:-}
+      NVIDIA_MCP_URL: ${NVIDIA_MCP_URL:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_ALLOWED_CHAT_ID: ${TELEGRAM_ALLOWED_CHAT_ID:-}
+      HOST: 0.0.0.0
+      PORT: "3200"
+      VAULT_DIR: /app/vault
+      DATA_DIR: /app/data
+      TZ: America/Rio_Branco
+    volumes:
+      - ./server.mjs:/app/server.mjs:ro
+      - ./src:/app/src:ro
+      - ./public:/app/public:ro
+      - ./vault:/app/vault:ro
+      - ./data:/app/data
+      - ./run:/app/run
+      - ./scripts:/app/scripts:ro
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3200/api/saude').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+      start_interval: 2s
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.jarvis.rule=Host(`jarvis.72-62-11-116.sslip.io`)
+      - traefik.http.routers.jarvis.entrypoints=websecure
+      - traefik.http.routers.jarvis.tls.certresolver=letsencrypt
+      - traefik.http.routers.jarvis.middlewares=jarvis-auth
+      - traefik.http.middlewares.jarvis-auth.basicauth.users=${JARVIS_BASICAUTH_USERS:?defina JARVIS_BASICAUTH_USERS no .env}
+      - traefik.http.middlewares.jarvis-auth.basicauth.realm=JARVIS
+      - traefik.http.middlewares.jarvis-auth.basicauth.removeheader=true
+      - traefik.http.services.jarvis.loadbalancer.server.port=3200

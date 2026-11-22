@@ -1,0 +1,14 @@
+[Unit]
+Description=Unix socket proxy from JARVIS container to Hermes API (127.0.0.1:8642)
+After=network.target
+
+[Service]
+Type=simple
+ExecStartPre=/bin/mkdir -p /opt/apps/jarvis/run
+ExecStartPre=/bin/chown 1000:1000 /opt/apps/jarvis/run
+ExecStart=/usr/bin/socat UNIX-LISTEN:/opt/apps/jarvis/run/hermes.sock,fork,reuseaddr,unlink-early,mode=660,user=1000,group=1000 TCP:127.0.0.1:8642
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

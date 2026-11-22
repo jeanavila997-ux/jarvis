@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#05080d">
+<title>JARVIS · A.V.I.L.A.</title>
+<link rel="icon" href="icon.svg">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<aside id="lateral">
+  <button id="nova" class="btn">+ Nova conversa</button>
+  <ul id="lista"></ul>
+  <div id="status" class="mini"></div>
+</aside>
+<main>
+  <header>
+    <button id="menu" class="icone" aria-label="Conversas">☰</button>
+    <div class="logo"><span class="reator"></span>JARVIS <small>v0.1 · A.V.I.L.A.</small></div>
+    <span id="modelo" class="mini"></span>
+  </header>
+  <section id="msgs">
+    <div class="boas">
+      <div class="reator grande"></div>
+      <h1>Olá, Jean.</h1>
+      <p>Sou o JARVIS v0.1. Por enquanto eu só converso e consulto o vault do projeto — não executo nada, não envio nada, não apago nada.</p>
+      <div class="sugestoes">
+        <button>O que é o JARVIS e quais são as fases do roadmap?</button>
+        <button>Quais são os meus limites inegociáveis?</button>
+        <button>Quais pendências abertas aparecem no histórico?</button>
+      </div>
+    </div>
+  </section>
+  <form id="form">
+    <textarea id="entrada" rows="1" placeholder="Pergunte ao JARVIS…" autocomplete="off"></textarea>
+    <button id="enviar" class="btn" type="submit">Enviar</button>
+  </form>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

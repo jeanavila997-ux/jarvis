@@ -1,0 +1,13 @@
+.env
+.env.*
+!.env.example
+data/
+vault/
+node_modules/
+*.bak*
+.build.log
+run/
+!.env.local.example
+backups/
+*.tar.gz
+.superpowers/

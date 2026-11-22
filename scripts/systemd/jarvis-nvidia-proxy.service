@@ -1,4 +1,5 @@
-# NÃO instalar enquanto o túnel reverso do PC não existir (docs/RODAR-NO-PC.md).
+# Instalada na VPS em 21/11, mas PARADA e DESABILITADA até o túnel reverso do PC existir
+# (docs/RODAR-NO-PC.md, seção 7). Ligar com: systemctl enable --now jarvis-nvidia-proxy
 # Túnel entrega o nvidia-app do PC em 127.0.0.1:13508 da VPS; socket só para o container.
 # O cliente src/nvidia.mjs (NVIDIA_MCP_URL) continua filtrando: só as 6 ferramentas de LEITURA.
 [Unit]

@@ -80,24 +80,33 @@ Depois, `docker compose -f docker-compose.pc.yml up -d --force-recreate jarvis` 
 
 ## 7. Túnel reverso PC → VPS (para o JARVIS da VPS ver o Mestre e o nvidia-app)
 
-**Ainda não autorizado.** Precisa do "sim" do Jean para a linha no `authorized_keys` (mexe no SSH; o Grok Bot não edita).
+**Já preparado na VPS (aprovado pelo Jean em 21/11):**
+- usuário de sistema `jarvis-tunel`: senha travada, shell `/usr/sbin/nologin`, home `/home/jarvis-tunel`, `.ssh` com permissão 700;
+- `/home/jarvis-tunel/.ssh/authorized_keys` vazio (600), à espera da chave pública do PC;
+- modelo comentado em `/home/jarvis-tunel/.ssh/authorized_keys.modelo`;
+- units `jarvis-mestre-proxy` e `jarvis-nvidia-proxy` instaladas, mas **paradas e desabilitadas** até o túnel existir;
+- o `sshd_config` e o `authorized_keys` do root não foram alterados. A config atual do sshd já permite o túnel (`AllowTcpForwarding yes`, `GatewayPorts no`, sem `AllowUsers`).
 
-### 7.1 Chave só para o túnel (no PC)
+### 7.1 Gerar a chave só para o túnel (no PC, PowerShell)
 
 ```powershell
-ssh-keygen -t ed25519 -f "$env:USERPROFILE\.ssh\id_ed25519_jarvis_tunel" -C "jarvis-tunel@DESKTOP-O7T3I00" -N '""'
-Get-Content "$env:USERPROFILE\.ssh\id_ed25519_jarvis_tunel.pub"     # a parte pública vai para o Jean aprovar
+ssh-keygen -t ed25519 -f "$env:USERPROFILE\.ssh\id_ed25519_jarvis_tunel" -C "jarvis-tunel@DESKTOP-O7T3I00"
+# Ao pedir a frase-senha, aperte Enter duas vezes (sem frase): o túnel roda sozinho pelo Agendador.
+icacls "$env:USERPROFILE\.ssh\id_ed25519_jarvis_tunel" /inheritance:r /grant:r "$($env:USERNAME):(R)"
+Get-Content "$env:USERPROFILE\.ssh\id_ed25519_jarvis_tunel.pub"   # só a parte PÚBLICA vai para a VPS
 ```
 
-### 7.2 Linha que precisaria entrar no `authorized_keys` da VPS (NÃO aplicada)
+A chave privada (`id_ed25519_jarvis_tunel`, sem `.pub`) **nunca** sai do PC.
+
+### 7.2 Linha que entra em `/home/jarvis-tunel/.ssh/authorized_keys` (o Grok Bot aplica quando o Jean mandar o `.pub`)
 
 ```text
 restrict,port-forwarding,permitlisten="127.0.0.1:17777",permitlisten="127.0.0.1:13508",command="/bin/false" ssh-ed25519 AAAA...CHAVE_PUBLICA... jarvis-tunel@DESKTOP-O7T3I00
 ```
 
-- `restrict` desliga tudo (shell, PTY, agent, X11, encaminhamento local); `port-forwarding` religa só o encaminhamento; `permitlisten` limita o `-R` a essas duas portas no loopback da VPS.
-- `command="/bin/false"`: se alguém tentar abrir shell com essa chave, nada roda (o túnel usa `-N`, sem shell).
-- Melhor ainda (decisão do Jean): um usuário próprio sem shell em vez de `root`.
+- `restrict` desliga tudo: shell, PTY, agent, X11 e encaminhamento local. `port-forwarding` religa só o encaminhamento, e `permitlisten` limita o `-R` a essas duas portas no loopback da VPS.
+- `command="/bin/false"` e o shell `nologin` garantem que essa chave não abre shell. O túnel usa `-N`, sem shell.
+- O usuário `jarvis-tunel` não tem senha nem sudo e não é o root.
 
 ### 7.3 Comando do túnel (no PC)
 
@@ -106,25 +115,24 @@ ssh -N -T -i "$env:USERPROFILE\.ssh\id_ed25519_jarvis_tunel" `
   -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 `
   -R 127.0.0.1:17777:127.0.0.1:7777 `
   -R 127.0.0.1:13508:127.0.0.1:13508 `
-  root@72.62.11.116
+  jarvis-tunel@72.62.11.116
 ```
 
-Para manter de pé: Agendador de Tarefas ("Ao fazer logon", repetir se falhar) rodando esse comando num laço do PowerShell:
-`while ($true) { ssh ...; Start-Sleep 15 }`.
+Na primeira conexão o ssh pergunta se confia na chave do servidor 72.62.11.116: responda `yes`. Depois, para manter o túnel de pé, use o Agendador de Tarefas ("Ao fazer logon", repetir se falhar) rodando esse comando num laço do PowerShell:
+`while ($true) { ssh -N -T ... jarvis-tunel@72.62.11.116; Start-Sleep 15 }`.
 
-### 7.4 Na VPS, depois do túnel (Grok Bot faz, com "sim")
+### 7.4 Na VPS, depois do túnel (o Grok Bot faz, com o "sim" do Jean)
 
 ```bash
-ss -tlnp | grep -E '127.0.0.1:(17777|13508)'          # túnel chegou só no loopback
-cp scripts/systemd/jarvis-mestre-proxy.service scripts/systemd/jarvis-nvidia-proxy.service /etc/systemd/system/
-systemctl daemon-reload && systemctl enable --now jarvis-mestre-proxy jarvis-nvidia-proxy
+ss -tlnp | grep -E '127.0.0.1:(17777|13508)'          # o túnel chegou só no loopback
+systemctl enable --now jarvis-mestre-proxy jarvis-nvidia-proxy   # units já instaladas
 # .env da VPS (sem mostrar valores): MESTRE_MCP=1, MESTRE_MCP_URL=unix:///app/run/mestre.sock, MESTRE_MCP_TOKEN=...
 #                                    NVIDIA_APP=1, NVIDIA_MCP_URL=unix:///app/run/nvidia.sock
-cd /opt/apps/jarvis && docker compose up -d --force-recreate
+cd /opt/apps/jarvis && docker compose up -d --force-recreate jarvis
 docker exec jarvis-jarvis-1 wget -qO- http://127.0.0.1:3200/api/mestre
 ```
 
-Nenhuma porta pública, nenhuma regra nova de UFW: o túnel entra pelo SSH (22) e só cria escutas em `127.0.0.1`; o container fala por socket Unix.
+Nenhuma porta pública e nenhuma regra nova de UFW: o túnel entra pelo SSH (22) e só cria escutas em `127.0.0.1`. O container fala por socket Unix.
 
 ## Níveis do Mestre do PC (src/mestre-mcp.mjs, decididos por código)
 

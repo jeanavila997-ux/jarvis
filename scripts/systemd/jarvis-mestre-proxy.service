@@ -1,4 +1,5 @@
-# NÃO instalar enquanto o túnel reverso do PC não existir (docs/RODAR-NO-PC.md).
+# Instalada na VPS em 21/11, mas PARADA e DESABILITADA até o túnel reverso do PC existir
+# (docs/RODAR-NO-PC.md, seção 7). Ligar com: systemctl enable --now jarvis-mestre-proxy
 # Mesmo padrão do Hermes: sem porta TCP nova, sem UFW. O túnel entrega o MCP do PC em
 # 127.0.0.1:17777 da VPS; este socat expõe isso só no socket montado no container JARVIS.
 [Unit]

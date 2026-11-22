@@ -25,7 +25,7 @@ export function textoPuro(md) {
   return md.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/__([^_]+)__/g, '$1').replace(/^#{1,6}\s+/gm, '').replace(/^```\w*\s*$/gm, '').trim();
 }
 
-export function criarTelegram({ token, chatPermitido, dataDir, perguntar, lerConv, novaConv, salvarConv, skills, auditar, status, resumo = async () => ({ total: 0, dias: 1 }), api: apiInjetada, hermes = null, nvidia = null, textoHermes = null, textoNvidia = null }) {
+export function criarTelegram({ token, chatPermitido, dataDir, perguntar, lerConv, novaConv, salvarConv, skills, auditar, status, resumo = async () => ({ total: 0, dias: 1 }), api: apiInjetada, hermes = null, nvidia = null, textoHermes = null, textoNvidia = null, mestre = null, textoMestre = null }) {
   if (!token || !chatPermitido) { console.log('[telegram] desativado (TELEGRAM_BOT_TOKEN ou TELEGRAM_ALLOWED_CHAT_ID ausente)'); return null; }
   const permitido = String(chatPermitido);
   const dir = path.join(dataDir, 'telegram');
@@ -85,7 +85,8 @@ export function criarTelegram({ token, chatPermitido, dataDir, perguntar, lerCon
 /skill <nome> — ativa/desativa a skill NESTA conversa (/skill off tira todas)
 /testesim — mostra como funciona o botão de "sim" (não executa nada)
 /hermes — status do Hermes (leitura); tarefas se houver chave
-/nvidia — status da GPU (nvidia-app, só leitura)`;
+/nvidia — status da GPU (nvidia-app, só leitura)
+/mestre — status do Mestre do PC; /mestre <ferramenta> [json|texto] pede a ação (nível 2 com botão; destrutivo é recusado)`;
 
   async function comando(chatId, cmd, args = '') {
     if (cmd === '/start') return enviar(chatId, `Olá, Jean. Sou o JARVIS, agora também no Telegram. Pode perguntar em texto; uso o vault do projeto e cito as notas.\n\nFaço rotinas de nível 0-1: briefing 06:30, revisão 21:00 com diário, reindexação e status. Nada destrutivo — nível 2+ sempre pede seu "sim".\n\n${AJUDA}`);
@@ -165,6 +166,19 @@ export function criarTelegram({ token, chatPermitido, dataDir, perguntar, lerCon
     if (cmd === '/nvidia') {
       if (!textoNvidia) return enviar(chatId, 'nvidia-app não está ligado nesta instalação.');
       return enviar(chatId, await textoNvidia());
+    }
+    if (cmd === '/mestre') {
+      if (!mestre?.ativa) return enviar(chatId, 'Mestre do PC: desligado (MESTRE_MCP=0 ou túnel do PC ainda não existe).');
+      if (!args) return enviar(chatId, await textoMestre());
+      const [nome, ...resto] = args.split(/\s+/); const r = resto.join(' ').trim();
+      let a = {};
+      if (r.startsWith('{')) { try { a = JSON.parse(r); } catch { return enviar(chatId, 'JSON inválido. Nada foi feito.'); } }
+      else if (r) a = nome === 'run_operation' ? { operation: r } : { texto: r };
+      const p = mestre.prepararAcao({ confirmacoes, nome, args: a, canal: 'telegram', chatId, auditar: e => auditar({ canal: 'telegram', ...e }) });
+      if (p.recusado) return enviar(chatId, p.motivo);
+      if (p.executarAgora) { try { const x = await p.executarAgora(); return enviar(chatId, String(x.texto).slice(0, 3500)); } catch (e) { return enviar(chatId, 'Mestre do PC: ' + e.message); } }
+      return enviar(chatId, `Ação de nível 2: ${p.rotulo}\nConfirme no botão (10 min, uso único).`,
+        { reply_markup: { inline_keyboard: [[{ text: '✅ Confirmar', callback_data: `cf:${p.id}` }, { text: '✖️ Cancelar', callback_data: `cc:${p.id}` }]] } });
     }
     return enviar(chatId, `Comando desconhecido.\n\n${AJUDA}`);
   }

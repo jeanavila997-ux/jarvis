@@ -1,0 +1,17 @@
+# NÃO instalar enquanto o túnel reverso do PC não existir (docs/RODAR-NO-PC.md).
+# Túnel entrega o nvidia-app do PC em 127.0.0.1:13508 da VPS; socket só para o container.
+# O cliente src/nvidia.mjs (NVIDIA_MCP_URL) continua filtrando: só as 6 ferramentas de LEITURA.
+[Unit]
+Description=Unix socket proxy from JARVIS container to nvidia-app MCP via SSH tunnel (127.0.0.1:13508)
+After=network.target
+
+[Service]
+Type=simple
+ExecStartPre=/bin/mkdir -p /opt/apps/jarvis/run
+ExecStartPre=/bin/chown 1000:1000 /opt/apps/jarvis/run
+ExecStart=/usr/bin/socat UNIX-LISTEN:/opt/apps/jarvis/run/nvidia.sock,fork,reuseaddr,unlink-early,mode=660,user=1000,group=1000 TCP:127.0.0.1:13508
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

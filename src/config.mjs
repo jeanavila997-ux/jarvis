@@ -214,8 +214,66 @@ export function criarConfig({ dataDir, env = process.env, agora = () => Date.now
     return listar();
   }
 
+  // Probe só de leitura com timeout curto e sanitização de segredos na mensagem de erro.
+  async function probeHttp(url, chave = '') {
+    const headers = chave ? { authorization: `Bearer ${chave}` } : {};
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8000);
+    try {
+      const r = await fetchFn(url, { method: 'GET', signal: ctrl.signal, headers });
+      if (!r.ok) {
+        let msg = '';
+        try { const txt = await r.text(); try { const j = JSON.parse(txt); msg = typeof j.error === 'string' ? j.error : (j.error?.message || txt); } catch { msg = txt; } } catch {}
+        msg = String(msg).slice(0, 120);
+        if (r.status === 401) return { ok: false, detalhe: 'chave recusada (401)' };
+        return { ok: false, detalhe: `HTTP ${r.status}: ${msg || 'sem corpo'}` };
+      }
+      return { ok: true, corpo: await r.json().catch(() => ({})) };
+    } finally { clearTimeout(timer); }
+  }
+
   async function testar(id) {
-    throw new Error(`id desconhecido: ${String(id)}`);
+    const t0 = agora();
+    const res = await resolucao();
+    const segredos = ['ollamaCloud', 'opencodeGo', 'codex', 'ninerouter', 'hermes'].map(a => res.apis[a].apiKey).concat([res.apis.nvidia.token, res.apis.dockerMcp.token]).filter(v => typeof v === 'string' && v);
+    const sanitizar = s => { let out = String(s); for (const v of segredos) out = out.split(v).join('[chave]'); return out.slice(0, 120); };
+    let out;
+    if (id === 'nvidia' || id === 'github') {
+      const p = probes[id];
+      if (!p) throw new Error(`id desconhecido: ${id}`);
+      try { const r = await p(); out = { ok: Boolean(r?.ok), detalhe: sanitizar(r?.detalhe || 'ok') }; } catch (e) { out = { ok: false, detalhe: sanitizar(e.message) }; }
+    } else if (APIS[id] && id.startsWith('ollama')) {
+      const base = String(res.apis[id].url).replace(/\/$/, '');
+      const r = await probeHttp(`${base}/api/tags`, res.apis[id].apiKey || '').catch(e => ({ ok: false, detalhe: sanitizar(e.message) }));
+      out = r.ok ? { ok: true, detalhe: `${(r.corpo.models || []).length} modelos` } : r;
+    } else if (id === 'opencodeGo' || id === 'codex') {
+      const api = res.apis[id];
+      if (!api.url || !api.apiKey) out = { ok: false, detalhe: 'url/chave não configuradas' };
+      else {
+        const base = String(api.url).replace(/\/$/, '');
+        const r = await probeHttp(`${base}/models`, api.apiKey).catch(e => ({ ok: false, detalhe: sanitizar(e.message) }));
+        const nomes = r.ok ? (r.corpo.data || []).map(m => m.id || m.name).filter(Boolean).slice(0, 3).join(', ') : '';
+        out = r.ok ? { ok: true, detalhe: `${(r.corpo.data || []).length} modelos${nomes ? `: ${nomes}` : ''}` } : r;
+      }
+    } else if (id === 'ninerouter') {
+      const api = res.apis[id];
+      if (!api.url) out = { ok: false, detalhe: 'url não configurada' };
+      else {
+        const raiz = String(api.url).replace(/\/+$/, '').replace(/\/v1$/, '');
+        const r = await probeHttp(`${raiz}/api/health`).catch(e => ({ ok: false, detalhe: sanitizar(e.message) }));
+        out = r.ok ? { ok: true, detalhe: r.corpo.ok === true ? 'ok' : 'respondeu sem ok:true' } : r;
+      }
+    } else if (id === 'hermes') {
+      const api = res.apis[id];
+      if (!api.url) out = { ok: false, detalhe: 'url não configurada (HERMES_URL)' };
+      else {
+        const base = String(api.url).replace(/\/$/, '');
+        const r = await probeHttp(`${base}/health`).catch(e => ({ ok: false, detalhe: sanitizar(e.message) }));
+        out = r.ok ? { ok: true, detalhe: 'ok' } : r;
+      }
+    } else throw new Error(`id desconhecido: ${String(id)}`);
+    if (out) out = { ...out, detalhe: sanitizar(out.detalhe ?? '') };
+    return { ...(out || { ok: false, detalhe: 'sem probe' }), ms: Math.round(agora() - t0) };
   }
 
   return { listar, definir, resolvido, testar };

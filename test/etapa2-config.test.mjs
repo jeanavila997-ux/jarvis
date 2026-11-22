@@ -107,3 +107,103 @@ test('definir rejeita corpo inválido e não grava nada', async () => {
   // nada foi gravado
   await assert.rejects(() => readFile(path.join(dataDir, 'config.json'), 'utf8'), { code: 'ENOENT' });
 });
+
+// ---------- Task 2: probes "Testar agora" ----------
+
+function resposta(status, corpo, cabecalhos = {}) {
+  return new Response(typeof corpo === 'string' ? corpo : JSON.stringify(corpo), { status, headers: cabecalhos });
+}
+
+test('probe ollamaNativo: GET /api/tags e detalhe com contagem de modelos', async () => {
+  const { criarConfig } = await import('../src/config.mjs');
+  const pedidos = [];
+  const fetchFn = async (url, op = {}) => { pedidos.push({ url, op }); return resposta(200, { models: [{ name: 'a' }, { name: 'b' }] }); };
+  const cfg = criarConfig({ dataDir: await dirTemp(), env: ENV(), fetchFn });
+  const r = await cfg.testar('ollamaNativo');
+  assert.equal(pedidos[0].url, 'http://host.docker.internal:11434/api/tags');
+  assert.equal(r.ok, true);
+  assert.match(r.detalhe, /2/);
+  assert.ok(r.ms >= 0);
+});
+
+test('probe opencodeGo: GET /models com Authorization Bearer', async () => {
+  const { criarConfig } = await import('../src/config.mjs');
+  const dataDir = await dirTemp();
+  let cfg = criarConfig({ dataDir, env: ENV(), fetchFn: null });
+  cfg = criarConfig({ dataDir, env: ENV(), fetchFn: async (url, op = {}) => {
+    assert.equal(url, 'https://opencode.ai/inference/go/openai/v1/models');
+    assert.equal(op.headers?.authorization, 'Bearer oc_sk_TESTE_chave_1234');
+    return resposta(200, { data: [{ id: 'kimi-k3' }] });
+  } });
+  await cfg.definir(JSON.parse('{"apis":{"opencodeGo":{"apiKey":"oc_sk_TESTE_chave_1234","ligada":true}}}'));
+  const r = await cfg.testar('opencodeGo');
+  assert.equal(r.ok, true);
+  assert.match(r.detalhe, /kimi-k3|1/);
+});
+
+test('probe codex: GET /v1/models Bearer', async () => {
+  const { criarConfig } = await import('../src/config.mjs');
+  const urls = [];
+  const cfg = criarConfig({ dataDir: await dirTemp(), env: ENV(), fetchFn: async (url) => { urls.push(url); return resposta(200, { data: [{ id: 'gpt-5.3-codex' }] }); } });
+  await cfg.definir(JSON.parse('{"apis":{"codex":{"apiKey":"sk_codex_0001","ligada":true}}}'));
+  const r = await cfg.testar('codex');
+  assert.equal(urls[0], 'https://api.openai.com/v1/models');
+  assert.equal(r.ok, true);
+});
+
+test('probe ninerouter: health sem /v1 (raiz + /api/health)', async () => {
+  const { criarConfig } = await import('../src/config.mjs');
+  const urls = [];
+  const cfg = criarConfig({ dataDir: await dirTemp(), env: ENV({ NINEROUTER_URL: 'https://nr.test/v1', NINEROUTER_RESERVA: '1' }), fetchFn: async (url) => { urls.push(url); return resposta(200, { ok: true }); } });
+  const r = await cfg.testar('ninerouter');
+  assert.equal(urls[0], 'https://nr.test/api/health');
+  assert.equal(r.ok, true);
+});
+
+test('probe hermes: GET {url}/health', async () => {
+  const { criarConfig } = await import('../src/config.mjs');
+  const urls = [];
+  const cfg = criarConfig({ dataDir: await dirTemp(), env: ENV({ HERMES_URL: 'https://hermes.test' }), fetchFn: async (url) => { urls.push(url); return resposta(200, { ok: true }); } });
+  const r = await cfg.testar('hermes');
+  assert.equal(urls[0], 'https://hermes.test/health');
+  assert.equal(r.ok, true);
+});
+
+test('probes nvidia e github chamam callbacks injetáveis', async () => {
+  const { criarConfig } = await import('../src/config.mjs');
+  const cfg = criarConfig({ dataDir: await dirTemp(), env: ENV({ NVIDIA_APP: '1', DOCKER_MCP: '1' }), fetchFn: async () => resposta(500, 'não deve ser chamado'),
+    probes: { nvidia: async () => ({ ok: true, detalhe: '6 ferramentas' }), github: async () => ({ ok: false, detalhe: 'gateway fora' }) } });
+  const n = await cfg.testar('nvidia');
+  assert.equal(n.ok, true);
+  assert.match(n.detalhe, /6 ferramentas/);
+  const g = await cfg.testar('github');
+  assert.equal(g.ok, false);
+  assert.match(g.detalhe, /gateway fora/);
+});
+
+test('probe 401: ok false e mensagem "chave recusada (401)" sem ecoar o valor', async () => {
+  const { criarConfig } = await import('../src/config.mjs');
+  const SEGREDO = 'oc_sk_falha_abcdef';
+  const cfg = criarConfig({ dataDir: await dirTemp(), env: ENV(), fetchFn: async () => resposta(401, `{"error":{"message":"bad key ${SEGREDO}"}}`) });
+  await cfg.definir(JSON.parse(`{"apis":{"opencodeGo":{"apiKey":"${SEGREDO}","ligada":true}}}`));
+  const r = await cfg.testar('opencodeGo');
+  assert.equal(r.ok, false);
+  assert.match(r.detalhe, /chave recusada \(401\)/);
+  assert.ok(!JSON.stringify(r).includes(SEGREDO), 'detalhe ecoou a chave');
+});
+
+test('erro de probe com o valor da chave no corpo é sanitizado', async () => {
+  const { criarConfig } = await import('../src/config.mjs');
+  const SEGREDO = 'sk_sanitiza_9f8a7b';
+  const cfg = criarConfig({ dataDir: await dirTemp(), env: ENV(), fetchFn: async () => resposta(500, `explode: ${SEGREDO} interno`) });
+  await cfg.definir(JSON.parse(`{"apis":{"codex":{"apiKey":"${SEGREDO}","ligada":true}}}`));
+  const r = await cfg.testar('codex');
+  assert.ok(!r.detalhe.includes(SEGREDO), 'sanitização faltou');
+  assert.match(r.detalhe, /\[chave\]|500/);
+});
+
+test('testar(id) com id desconhecido lança', async () => {
+  const { criarConfig } = await import('../src/config.mjs');
+  const cfg = criarConfig({ dataDir: await dirTemp(), env: ENV() });
+  await assert.rejects(() => cfg.testar('naoexiste'), /id desconhecido/);
+});

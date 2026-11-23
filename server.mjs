@@ -18,7 +18,7 @@ import { criarRotinas } from './src/rotinas.mjs';
 import { criarSkills } from './src/skills.mjs';
 import { criarConfig } from './src/config.mjs';
 import { auditar } from './src/auditoria.mjs';
-import { ehUnix, exigeChaveOllama, fetchUrl } from './src/http-unix.mjs';
+import { ehUnix, exigeChaveOllama, opcoesChatLocal, fetchUrl } from './src/http-unix.mjs';
 import { criarClienteHermes, interpretarPedidoHermes, textoHermesStatus } from './src/hermes.mjs';
 import { criarClienteNvidia, criarClienteNvidiaMcp } from './src/nvidia.mjs';
 import { criarClienteDockerMcp } from './src/docker-mcp.mjs';
@@ -128,10 +128,15 @@ const indice = new Indice(VAULT_DIR);
 await mkdir(CONV_DIR, { recursive: true });
 const r = await indice.reindexar();
 console.log(`[jarvis] vault indexado: ${r.notas} notas, ${r.trechos} trechos, ${r.ignorados.length} ignorados`);
-const NUVEM_LOCAL = !exigeChaveOllama(OLLAMA_URL);
 const THINK_LOCAL = process.env.JARVIS_THINK === '1' ? true : process.env.JARVIS_THINK === '0' ? false : undefined;
-if (!API_KEY && !NUVEM_LOCAL) console.warn('[jarvis] AVISO: OLLAMA_API_KEY ausente — o chat na nuvem vai mostrar erro.');
-if (!API_KEY && NUVEM_LOCAL) console.log('[jarvis] Ollama principal é local; chave de nuvem não é necessária.');
+// A URL corrente (aba Config) decide se o principal é local. O nome `ollama` do compose do PC também é local.
+function principalEhLocal() { return !exigeChaveOllama(nuvem?.url || OLLAMA_URL); }
+function opcoesLocais(curto) {
+  return opcoesChatLocal({ curto, think: THINK_LOCAL, numCtx: process.env.JARVIS_NUM_CTX || 4096, numPredict: process.env.JARVIS_NUM_PREDICT });
+}
+// Não chama principalEhLocal aqui: `nuvem` ainda não existe (let mais abaixo).
+if (!API_KEY && exigeChaveOllama(OLLAMA_URL)) console.warn('[jarvis] AVISO: OLLAMA_API_KEY ausente — o chat na nuvem vai mostrar erro.');
+if (!API_KEY && !exigeChaveOllama(OLLAMA_URL)) console.log('[jarvis] Ollama principal é local; chave de nuvem não é necessária.');
 
 const agoraAcre = () => new Date().toLocaleString('pt-BR', { timeZone: 'America/Rio_Branco', dateStyle: 'full', timeStyle: 'short' });
 const idValido = id => /^[a-f0-9-]{36}$/.test(id || '');
@@ -180,7 +185,7 @@ const roteador = criarRoteador({
   classificar: texto => classificar(texto, { url: LOCAL_URL, model: LOCAL_MODEL, timeoutMs: CLASSIF_TIMEOUT_MS }),
   log: m => console.warn('[roteador]', m),
 });
-const statusAtual = () => ({ uptimeS: Math.round((Date.now() - INICIO) / 1000), modelo: nuvem.model, local: roteador.localLigado, localModelo: LOCAL_MODEL, nuvemLocal: NUVEM_LOCAL, reserva: reservaRuntime.ativa ? reservaRuntime.model : null, hermes: hermes.ativa ? (snapHermes || { ok: false, motivo: 'ainda-nao-medido' }) : null, nvidia: nvidia.ativa ? (snapNvidia || { ok: false, motivo: 'ainda-nao-medido' }) : null, github: dockerMcp.ativa ? (snapGithub || { ok: false, motivo: 'ainda-nao-medido' }) : null, mestre: mestre.ativa ? (snapMestre || { ok: false, motivo: 'ainda-nao-medido' }) : null, voz: voz.ativa ? (snapVoz || { ok: false, motivo: 'ainda-nao-medido' }) : null, notas: indice.notas, trechos: indice.chunks.length, indexado: indice.atualizado });
+const statusAtual = () => ({ uptimeS: Math.round((Date.now() - INICIO) / 1000), modelo: nuvem.model, local: roteador.localLigado, localModelo: LOCAL_MODEL, nuvemLocal: principalEhLocal(), reserva: reservaRuntime.ativa ? reservaRuntime.model : null, hermes: hermes.ativa ? (snapHermes || { ok: false, motivo: 'ainda-nao-medido' }) : null, nvidia: nvidia.ativa ? (snapNvidia || { ok: false, motivo: 'ainda-nao-medido' }) : null, github: dockerMcp.ativa ? (snapGithub || { ok: false, motivo: 'ainda-nao-medido' }) : null, mestre: mestre.ativa ? (snapMestre || { ok: false, motivo: 'ainda-nao-medido' }) : null, voz: voz.ativa ? (snapVoz || { ok: false, motivo: 'ainda-nao-medido' }) : null, notas: indice.notas, trechos: indice.chunks.length, indexado: indice.atualizado });
 const ctxRegras = { status: statusAtual, resumo: dias => resumoUso(DATA_DIR, dias), textoHermes, textoNvidia, textoGithub, textoMestre };
 const skills = criarSkills({ dataDir: DATA_DIR, log: m => console.warn('[skills]', m) });
 // Config em camadas (Etapa 2): defaults → env → data/config.json. Segredos nunca voltam com valor.
@@ -269,8 +274,7 @@ async function perguntar(conv, texto, { onDelta = () => {}, onPensando = () => {
       onRota({ rota: 'local', modelo: LOCAL_MODEL });
       let emitiu = false;
       try {
-        const r = await chatOllama({ url: LOCAL_URL, model: LOCAL_MODEL, nome: 'Ollama local', signal, timeoutMs: LOCAL_TIMEOUT_MS, keepAlive: '30m',
-          think: THINK_LOCAL, options: { temperature: 0.4, num_predict: 300, num_ctx: Number(process.env.JARVIS_NUM_CTX || 4096) },
+        const r = await chatOllama({ url: LOCAL_URL, model: LOCAL_MODEL, nome: 'Ollama local', signal, timeoutMs: LOCAL_TIMEOUT_MS, ...opcoesLocais(true),
           messages: [{ role: 'system', content: montarPromptLocal(trechos, agoraAcre()) }, ...historico.slice(-6)],
           onDelta: t => { emitiu = true; onDelta(t); } });
         if (!r.resposta.trim()) throw new Error('modelo local terminou sem resposta');
@@ -290,9 +294,10 @@ async function perguntar(conv, texto, { onDelta = () => {}, onPensando = () => {
         + (corposAtivas.length ? '\n\n' + corposAtivas.join('\n\n') : '') }, ...historico];
       let emitiu = false;
       try {
-        if (!nuvem.apiKey && !NUVEM_LOCAL) throw new Error('OLLAMA_API_KEY não configurada (.env ou aba Config).');
-        const r = await chatOllama({ url: nuvem.url, apiKey: nuvem.apiKey, model: nuvem.model, messages: mensagens, signal, timeoutMs: nuvem.timeoutMs, nome: NUVEM_LOCAL ? 'Ollama local' : 'Ollama Cloud',
-          ...(NUVEM_LOCAL ? { think: THINK_LOCAL, keepAlive: '30m', options: { temperature: 0.4, num_predict: 300, num_ctx: Number(process.env.JARVIS_NUM_CTX || 4096) } } : {}),
+        const local = principalEhLocal();
+        if (!nuvem.apiKey && !local) throw new Error('OLLAMA_API_KEY não configurada (.env ou aba Config).');
+        const r = await chatOllama({ url: nuvem.url, apiKey: nuvem.apiKey, model: nuvem.model, messages: mensagens, signal, timeoutMs: nuvem.timeoutMs, nome: local ? 'Ollama local' : 'Ollama Cloud',
+          ...(local ? opcoesLocais(false) : {}),
           onPensando, onDelta: t => { emitiu = true; onDelta(t); } });
         if (!r.resposta) throw new Error('O modelo terminou sem resposta.');
         ({ resposta, tokensIn, tokensOut } = r); modelo = nuvem.model;
@@ -372,7 +377,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && req.headers['x-jarvis'] !== '1') return json(res, 403, { erro: 'cabeçalho X-Jarvis ausente' });
     if (p === '/api/saude' && req.method === 'GET') {
       await atualizarSnaps();
-      return json(res, 200, { ok: true, versao: '0.2.0', modelo: nuvem.model, local: roteador.localLigado ? LOCAL_MODEL : null, nuvemLocal: NUVEM_LOCAL, hermes: statusAtual().hermes, nvidia: statusAtual().nvidia, github: statusAtual().github, mestre: statusAtual().mestre, voz: statusAtual().voz, reserva: reservaRuntime.ativa, notas: indice.notas, trechos: indice.chunks.length, ignorados: indice.ignorados, indexado: indice.atualizado });
+      return json(res, 200, { ok: true, versao: '0.2.0', modelo: nuvem.model, local: roteador.localLigado ? LOCAL_MODEL : null, nuvemLocal: principalEhLocal(), hermes: statusAtual().hermes, nvidia: statusAtual().nvidia, github: statusAtual().github, mestre: statusAtual().mestre, voz: statusAtual().voz, reserva: reservaRuntime.ativa, notas: indice.notas, trechos: indice.chunks.length, ignorados: indice.ignorados, indexado: indice.atualizado });
     }
     if (p === '/api/hermes' && req.method === 'GET') return json(res, 200, { texto: await textoHermes(), snap: snapHermes });
     if (p === '/api/nvidia' && req.method === 'GET') return json(res, 200, { texto: await textoNvidia(), snap: snapNvidia });

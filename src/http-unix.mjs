@@ -12,14 +12,43 @@ export function caminhoSocket(url) {
   return String(url).slice('unix://'.length);
 }
 
-// URLs locais (socket ou loopback/host.docker.internal) não exigem chave de API.
+// Nome de um rótulo só (ollama) é DNS interno do Docker, não a nuvem ollama.com.
+function hostnameLocal(hostname) {
+  const h = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
+  if (!h) return false;
+  if (['localhost', 'host.docker.internal', '::1'].includes(h)) return true;
+  if (!h.includes('.')) return true;
+  if (h.endsWith('.local') || h.endsWith('.internal')) return true;
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)) return true;
+  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)) return true;
+  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(h)) return true;
+  if (/^169\.254\.\d{1,3}\.\d{1,3}$/.test(h)) return true;
+  const m = h.match(/^172\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/);
+  return Boolean(m && Number(m[1]) >= 16 && Number(m[1]) <= 31);
+}
+
+// URLs locais (socket, loopback, DNS do compose ou IP privado) não exigem chave de API.
+// https://ollama.com continua exigindo: tem ponto e não é rede privada.
 export function exigeChaveOllama(url) {
   const u = String(url || '').trim();
   if (!u || ehUnix(u)) return false;
-  try {
-    const h = new URL(u).hostname.toLowerCase();
-    return !['127.0.0.1', 'localhost', 'host.docker.internal', '::1'].includes(h);
-  } catch { return true; }
+  try { return !hostnameLocal(new URL(u).hostname); }
+  catch { return true; }
+}
+
+// Saudação local fica curta. A resposta completa não herda esse teto de 300:
+// na RTX 3050 o limite seguro é o num_ctx, senão explicação e código saem cortados.
+export function opcoesChatLocal({ curto = false, think, numCtx = 4096, numPredict } = {}) {
+  const ctx = Number(numCtx);
+  const options = { temperature: 0.4, num_ctx: Number.isFinite(ctx) && ctx > 0 ? ctx : 4096 };
+  if (curto) options.num_predict = 300;
+  else if (numPredict != null && numPredict !== '') {
+    const n = Number(numPredict);
+    if (Number.isFinite(n) && n > 0) options.num_predict = n;
+  }
+  const out = { keepAlive: '30m', options };
+  if (think !== undefined) out.think = think;
+  return out;
 }
 
 function abortError() {

@@ -4,14 +4,24 @@ import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ehUnix, caminhoSocket, exigeChaveOllama, fetchUrl } from '../src/http-unix.mjs';
+import { ehUnix, caminhoSocket, exigeChaveOllama, opcoesChatLocal, fetchUrl } from '../src/http-unix.mjs';
 import { chatOllama } from '../src/llm.mjs';
 
 test('exigeChaveOllama: local e unix não exigem; nuvem exige', () => {
   assert.equal(exigeChaveOllama('unix:///app/run/ollama.sock'), false);
   assert.equal(exigeChaveOllama('http://127.0.0.1:11434'), false);
   assert.equal(exigeChaveOllama('http://host.docker.internal:11434'), false);
+  assert.equal(exigeChaveOllama('http://ollama:11434'), false);
+  assert.equal(exigeChaveOllama('http://172.16.5.1:11434'), false);
   assert.equal(exigeChaveOllama('https://ollama.com'), true);
+  assert.equal(exigeChaveOllama('https://api.ollama.com'), true);
+  const curta = opcoesChatLocal({ curto: true, think: false, numCtx: 2048 });
+  assert.equal(curta.think, false);
+  assert.equal(curta.options.num_ctx, 2048);
+  assert.equal(curta.options.num_predict, 300);
+  const completa = opcoesChatLocal({ curto: false, think: false, numCtx: 2048 });
+  assert.equal(completa.options.num_predict, undefined);
+  assert.equal(opcoesChatLocal({ numCtx: 'nope' }).options.num_ctx, 4096);
   assert.equal(ehUnix('unix:///app/run/ollama.sock'), true);
   assert.equal(caminhoSocket('unix:///app/run/ollama.sock'), '/app/run/ollama.sock');
 });

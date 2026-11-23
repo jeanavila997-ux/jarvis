@@ -1,0 +1,19 @@
+{
+  "name": "@jarvis/langgraph-orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Integração isolada do LangGraph para o orquestrador JARVIS.",
+  "scripts": {
+    "start": "node src/demo.mjs",
+    "test": "node --test test/*.test.mjs",
+    "audit": "npm audit --omit=dev"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@langchain/core": "1.5.0",
+    "@langchain/langgraph": "1.7.5"
+  }
+}

@@ -212,3 +212,13 @@ jc('#janelaconfig').addEventListener('click', async e => {
 
 jc('#configBtn').addEventListener('click', async () => { await recarregar().catch(() => {}); abrirAba(abaAtiva); jc('#janelaconfig').showModal(); });
 jc('#configFechar').addEventListener('click', () => jc('#janelaconfig').close());
+
+// deep-link: #config abre a janela; #config-<aba> abre direto na aba (ex.: #config-skills)
+window.addEventListener('load', async () => {
+  if (!location.hash.startsWith('#config')) return;
+  const aba = location.hash.replace('#config-', '').replace('#config', '');
+  const validas = ['apis', 'senhas', 'skills', 'comandos', 'mcp', 'plugins', 'links'];
+  try { await recarregar(); } catch (e) {}
+  try { abrirAba(validas.includes(aba) ? aba : 'apis'); } catch (e) {}
+  jc('#janelaconfig').showModal();
+});

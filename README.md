@@ -130,6 +130,13 @@ Só use modelos que estão dentro da assinatura. O JARVIS nunca troca de modelo 
 - Variáveis no `.env`: `TELEGRAM_BOT_TOKEN` e `TELEGRAM_ALLOWED_CHAT_ID`. Sem elas, o canal (e as rotinas) ficam desligados. O token do Hermes é outro, e os dois não podem usar o mesmo bot (daria erro 409).
 - Logs: `docker compose logs -f jarvis | grep telegram`
 
+## Skills (v0.3)
+- Formato Agent Skills: `data/skills/<nome>/SKILL.md` (frontmatter `name` + `description`). Instalação pelo hospedeiro (Hermes) — o JARVIS só **lê texto**; skills **nunca executam scripts**.
+- Comandos: `/skills` (lista com descrição) · `/skill <nome>` (ativa/desativa NA CONVERSA; `/skill off` tira todas). Ativação persiste no JSON da conversa (`conv.skills`). Sem conversa atual, o JARVIS pede para mandar uma mensagem antes.
+- Injeção: na rota nuvem, o SYSTEM recebe a lista dos nomes (via `listarLinha`) + o corpo completo das skills ativas (`corpos`). No modelo local (3B, 4096 ctx) skills não entram.
+- `/api/skills` (GET) lista as instaladas. Cache de leitura: 15 s — skill nova aparece sem restart.
+- Lote inicial (2026-11-22, 74 skills na VPS; 131 no PC): obra/superpowers (15), mattpocock/skills (40), anthropics/skills (18), multica-ai/karpathy-skills (1) + `exemplo` (demo). Instalador com triagem anti-injection; excluídos: `claude-api` e `skill-creator` (corpo > 30 KB). Muitas skills de dev presumem ferramentas que o JARVIS não tem — sem tools, são só texto e o prompt o impede de fingir execução.
+
 ## Segurança
 - Container sem portas publicadas, rede bridge própria, `read_only`, `cap_drop: ALL`, usuário 1000, 256 MB.
 - Basic-auth no Traefik; o hash fica no `.env`, a senha em texto só em `/root/.jarvis_credentials`.
@@ -143,4 +150,8 @@ Só use modelos que estão dentro da assinatura. O JARVIS nunca troca de modelo 
 4. **Status da VPS**: já entra por arquivo (`data/vps-status.json`, escrito por `/root/bin/gerar-vps-status.sh`). Pendente: os timers systemd `jarvis-status` (06:15/20:45) e `jarvis-diario` (22:00, publica o diário no vault `08-Diario`) aguardam o "sim" do Jean — sem eles, o briefing só envelhece a linha da VPS depois de 12 h e o diário não chega ao vault.
 5. **Ferramentas de leitura** (agenda, web) conforme a matriz `docs/PERMISSOES.md`; depois escrita com aprovação.
 6. **Memória**: embeddings locais e mais notas de diário.
-7. **Voz**: Whisper + TTS pt-BR.
+7. ~~**Voz**: Whisper + TTS pt-BR~~ — Voicebox pronto (`docs/VOICEBOX.md`), desligado por padrão.
+
+## Voicebox (TTS)
+
+Opcional e desligado por padrão (`VOICEBOX=0`). Detalhes em [docs/VOICEBOX.md](docs/VOICEBOX.md). No Telegram: `/voz`, `/voz <frase>` ou "responder em áudio". Prefere o Voicebox do PC quando o túnel estiver no ar; senão usa o da VPS ou o local (`VOICEBOX_URL=http://host.docker.internal:17493` no PC).

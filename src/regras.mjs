@@ -10,6 +10,7 @@ export const AJUDA = `Comandos (respondidos por regra, sem IA):
 /hermes — status do Hermes (leitura); tarefas se a chave estiver configurada
 /nvidia — status da GPU via nvidia-app (só leitura)
 /github — status do GitHub via Docker MCP Gateway (leitura; escrita pede "sim")
+/mestre — status do Mestre do PC (leitura; ações só no Telegram com "sim")
 /ajuda — esta lista
 No Telegram também: /nova (conversa nova), /briefing, /revisao, /reindexar, /parar (cancela confirmações e pausa rotinas), /retomar, /testesim.
 Ações do Hermes que mudam algo (pausar, retomar, rodar, apagar, criar) são nível 2 e pedem "sim" no Telegram.
@@ -20,7 +21,7 @@ export const TEXTO_PERMISSOES = `Níveis de permissão (docs/PERMISSOES.md, apli
 1 · Faz e avisa — só coisas do próprio JARVIS (diário, rascunho, lembrete), sempre auditado.
 2 · Precisa de "sim" — enviar mensagem, agenda, editar arquivo, reiniciar serviço, git, gastar, escrita comum no GitHub. Botão de confirmação, 10 min, uso único.
 3 · Proibido — apagar dados/backups, force-push, expor segredo, abrir porta, fallback pago, delete_file/merge no GitHub. Só o Jean faz.
-Ferramentas desta versão: ler vault, status do Hermes (e listar tarefas com chave), leitura do nvidia-app, leitura do GitHub via Docker MCP. Mutações do Hermes e escritas comuns do GitHub são nível 2 e só rodam depois do "sim" no Telegram.`;
+Ferramentas desta versão: ler vault, status do Hermes (e listar tarefas com chave), leitura do nvidia-app, leitura do GitHub via Docker MCP, status do Mestre do PC. Mutações do Hermes e escritas comuns do GitHub são nível 2 e só rodam depois do "sim" no Telegram.`;
 
 const PADROES = [
   ['status', /^\/?(status|saude|como\s+voce\s+esta\s+de\s+saude|voce\s+esta\s+(no\s+ar|online))[\s?!.]*$/],
@@ -30,6 +31,7 @@ const PADROES = [
   ['hermes', /^\/?hermes[\s?!.]*$/],
   ['nvidia', /^\/?(nvidia|gpu|rtx)[\s?!.]*$/],
   ['github', /^\/?(github|git\s*hub|docker[\s-]?mcp)[\s?!.]*$/],
+  ['mestre', /^\/?(mestre|mestre\s+do\s+pc)[\s?!.]*$/],
 ];
 
 export function qualRegra(texto) {
@@ -47,13 +49,14 @@ export function textoStatus(s) {
   const hermes = s.hermes ? (s.hermes.ok ? `Hermes: no ar (${s.hermes.versao || 'ok'})` : `Hermes: ${s.hermes.motivo || 'indisponível'}`) : 'Hermes: desligado';
   const nvidia = s.nvidia ? (s.nvidia.ok ? `nvidia-app: leitura ok (${(s.nvidia.ferramentas || []).length} ferramentas)` : `nvidia-app: ${s.nvidia.motivo || 'indisponível'}`) : 'nvidia-app: desligado';
   const github = s.github ? (s.github.ok ? `GitHub (Docker MCP): leitura ok (${(s.github.ferramentas || []).length} ferramentas)` : `GitHub (Docker MCP): ${s.github.motivo || 'indisponível'}`) : 'GitHub (Docker MCP): desligado';
+  const mestre = s.mestre ? (s.mestre.ok ? `Mestre do PC: no ar (${(s.mestre.ferramentas || []).length} ferramentas leitura)` : `Mestre do PC: ${s.mestre.motivo || 'indisponível'}`) : null;
   return `JARVIS no ar há ${h}h${String(m).padStart(2, '0')}min
 ${nuvem}
 Modelo local (classificador/trivial): ${local}
 Reserva 9Router (PC): ${s.reserva ? `ligada (${s.reserva})` : 'desligada'}
 ${hermes}
 ${nvidia}
-${github}
+${github}${mestre ? `\n${mestre}` : ''}
 Vault: ${s.notas} notas, ${s.trechos} trechos (indexado ${idx}, Acre)${s.pendentes != null ? `\nConfirmações pendentes: ${s.pendentes}` : ''}`;
 }
 
@@ -68,5 +71,6 @@ export async function responderPorRegras(texto, ctx) {
   if (r === 'hermes' && ctx.textoHermes) return { regra: r, texto: await ctx.textoHermes() };
   if (r === 'nvidia' && ctx.textoNvidia) return { regra: r, texto: await ctx.textoNvidia() };
   if (r === 'github' && ctx.textoGithub) return { regra: r, texto: await ctx.textoGithub() };
+  if (r === 'mestre' && ctx.textoMestre) return { regra: r, texto: await ctx.textoMestre() };
   return null;
 }

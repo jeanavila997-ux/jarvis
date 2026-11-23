@@ -1,0 +1,86 @@
+# JARVIS no PC do Jean (DESKTOP-O7T3I00, Windows 11 + Docker Desktop/WSL2, RTX 3050 4 GB).
+# NÃO use na VPS. Diferença para docker-compose.local.yml: aqui o Ollama roda em container com GPU.
+# Uso: docker compose -f docker-compose.pc.yml up -d   (passo a passo em docs/RODAR-NO-PC.md)
+# Regras: só 127.0.0.1, Telegram vazio (o bot da VPS já faz polling; mesmo token = HTTP 409),
+# reserva 9Router desligada, Mestre do PC e nvidia-app desligados até você ligar no .env.local.
+name: jarvis-pc
+services:
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:11434:11434"      # só o próprio PC (para `ollama` CLI/testes); nunca 0.0.0.0
+    environment:
+      OLLAMA_KEEP_ALIVE: "30m"       # evita carregar a frio a cada pergunta
+      OLLAMA_CONTEXT_LENGTH: "4096"  # 4 GB de VRAM: contexto maior faz split CPU/GPU
+      OLLAMA_MAX_LOADED_MODELS: "1"
+    volumes:
+      - ollama:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  jarvis:
+    image: jarvis:0.2-ffmpeg
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    user: "1000:1000"
+    working_dir: /app
+    command: ["node", "server.mjs"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    env_file:
+      - .env.local
+    environment:
+      HOST: 0.0.0.0
+      PORT: "3200"
+      VAULT_DIR: /app/vault
+      DATA_DIR: /app/data
+      TZ: America/Rio_Branco
+      # Ollama do container acima, com GPU (o .env.local não precisa de URL do Ollama)
+      OLLAMA_URL: http://ollama:11434
+      JARVIS_LOCAL_URL: http://ollama:11434
+      # Modelos, MESTRE_MCP e NVIDIA_APP vêm do .env.local (environment sobrepõe env_file).
+      # Travas: nunca Telegram nem reserva paga no PC, mesmo se alguém colar no .env.local
+      TELEGRAM_BOT_TOKEN: ""
+      TELEGRAM_ALLOWED_CHAT_ID: ""
+      NINEROUTER_RESERVA: "0"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # Mestre do PC (7777) e nvidia-app (13508) no Windows
+    ports:
+      - "127.0.0.1:3200:3200"
+    volumes:
+      - ./server.mjs:/app/server.mjs:ro
+      - ./src:/app/src:ro
+      - ./scripts:/app/scripts:ro
+      - ./public:/app/public:ro
+      - ./vault:/app/vault:ro
+      - ./data:/app/data
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3200/api/saude').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+      start_interval: 2s
+
+volumes:
+  ollama:

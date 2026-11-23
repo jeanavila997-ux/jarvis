@@ -1,13 +1,19 @@
 .env
 .env.*
 !.env.example
+!.env.local.example
+!docs/.env.local.example
 data/
 vault/
 node_modules/
 *.bak*
 .build.log
 run/
-!.env.local.example
 backups/
 *.tar.gz
 .superpowers/
+*.sock
+*.jarvis-ctx-fix*
+
+# Cópia local dos MCP (use .mcp.json.example). Pode ganhar tokens.
+.mcp.json

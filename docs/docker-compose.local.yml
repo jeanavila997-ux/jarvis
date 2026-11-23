@@ -1,0 +1,46 @@
+# JARVIS local no PC do Jean. NÃO use este arquivo na VPS.
+# Porta só em 127.0.0.1:3200. Telegram desligado (o bot da VPS já faz polling).
+# Reserva 9Router desligada. nvidia-app só LEITURA. Ollama: qwen3:4b no host.
+name: jarvis-local
+services:
+  jarvis:
+    image: node:22.23.5-alpine
+    restart: unless-stopped
+    user: "1000:1000"
+    working_dir: /app
+    command: ["node", "server.mjs"]
+    env_file:
+      - .env.local
+    environment:
+      HOST: 0.0.0.0
+      PORT: "3200"
+      VAULT_DIR: /app/vault
+      DATA_DIR: /app/data
+      TZ: America/Rio_Branco
+      # Garante Telegram off mesmo se alguém colar o token por engano
+      TELEGRAM_BOT_TOKEN: ""
+      TELEGRAM_ALLOWED_CHAT_ID: ""
+      NINEROUTER_RESERVA: "0"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:3200:3200"
+    volumes:
+      - ./server.mjs:/app/server.mjs:ro
+      - ./src:/app/src:ro
+      - ./scripts:/app/scripts:ro
+      - ./public:/app/public:ro
+      - ./vault:/app/vault:ro
+      - ./data:/app/data
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3200/api/saude').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+      start_interval: 2s

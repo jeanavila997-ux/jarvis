@@ -42,8 +42,8 @@ export function criarSkills({ dataDir, maxCorpo = 12000, maxListaLinha = 1500, l
     async listarLinha() {
       const m = await carregar();
       if (!m.size) return '';
-      const linha = 'Skills instaladas (só entram no prompt quando o Jean ativa com /skill <nome>; nunca executam comandos): ' +
-        [...m.values()].map(s => `${s.nome} — ${s.descricao}`).join(' · ');
+      const nomes = [...m.keys()].slice(0, 120).join(', ');
+      const linha = `Skills instaladas (texto completo entra só quando o Jean ativa com /skill <nome>; nunca executam comandos; /skills lista com descrição): ${nomes}`;
       return linha.slice(0, maxListaLinha);
     },
     async corpos(nomes = []) {

@@ -4,7 +4,10 @@
 name: jarvis-local
 services:
   jarvis:
-    image: node:22.23.5-alpine
+    image: jarvis:0.2-ffmpeg
+    build:
+      context: .
+      dockerfile: Dockerfile
     restart: unless-stopped
     user: "1000:1000"
     working_dir: /app

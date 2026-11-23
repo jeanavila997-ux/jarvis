@@ -5,6 +5,7 @@ import { Confirmacoes, NIVEL } from './confirmacoes.mjs';
 import { TEXTO_PERMISSOES } from './regras.mjs';
 import { textoResumo } from './uso.mjs';
 import { interpretarPedidoHermes } from './hermes.mjs';
+import { interpretarPedidoVoz, textoVozStatus } from './voz.mjs';
 
 const LIMITE = 4000;
 
@@ -25,7 +26,7 @@ export function textoPuro(md) {
   return md.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/__([^_]+)__/g, '$1').replace(/^#{1,6}\s+/gm, '').replace(/^```\w*\s*$/gm, '').trim();
 }
 
-export function criarTelegram({ token, chatPermitido, dataDir, perguntar, lerConv, novaConv, salvarConv, skills, auditar, status, resumo = async () => ({ total: 0, dias: 1 }), api: apiInjetada, hermes = null, nvidia = null, textoHermes = null, textoNvidia = null, textoGithub = null }) {
+export function criarTelegram({ token, chatPermitido, dataDir, perguntar, lerConv, novaConv, salvarConv, skills, auditar, status, resumo = async () => ({ total: 0, dias: 1 }), api: apiInjetada, hermes = null, nvidia = null, textoHermes = null, textoNvidia = null, textoGithub = null, mestre = null, textoMestre = null, voz = null, textoVoz = null }) {
   if (!token || !chatPermitido) { console.log('[telegram] desativado (TELEGRAM_BOT_TOKEN ou TELEGRAM_ALLOWED_CHAT_ID ausente)'); return null; }
   const permitido = String(chatPermitido);
   const dir = path.join(dataDir, 'telegram');
@@ -62,6 +63,18 @@ export function criarTelegram({ token, chatPermitido, dataDir, perguntar, lerCon
     return ultima;
   }
 
+  async function enviarVoz(chatId, ogg, caption = '') {
+    if (!ogg || !ogg.length) throw new Error('áudio vazio');
+    const form = new FormData();
+    form.set('chat_id', String(chatId));
+    form.set('voice', new Blob([ogg], { type: 'audio/ogg' }), 'voz.ogg');
+    if (caption) form.set('caption', String(caption).slice(0, 1024));
+    const r = await fetch(`https://api.telegram.org/bot${token}/sendVoice`, { method: 'POST', body: form });
+    const j = await r.json().catch(() => ({ ok: false, description: 'resposta inválida' }));
+    if (!j?.ok) console.error('[telegram] sendVoice falhou:', j?.error_code, j?.description);
+    return j;
+  }
+
   async function convDoChat(chatId, primeiroTexto) {
     const id = chats[chatId];
     if (id) { try { return await lerConv(id); } catch {} }
@@ -86,7 +99,9 @@ export function criarTelegram({ token, chatPermitido, dataDir, perguntar, lerCon
 /testesim — mostra como funciona o botão de "sim" (não executa nada)
 /hermes — status do Hermes (leitura); tarefas se houver chave
 /nvidia — status da GPU (nvidia-app, só leitura)
-/github — status do GitHub via Docker MCP (leitura)`;
+/github — status do GitHub via Docker MCP (leitura; escrita pede "sim")
+/mestre — status do Mestre do PC; /mestre <ferramenta> [json|texto] pede a ação (nível 2 com botão; destrutivo é recusado)
+/voz — status do Voicebox; /voz <frase> gera áudio; /voz ligar (ou "responder em áudio") fala as respostas`;
 
   async function comando(chatId, cmd, args = '') {
     if (cmd === '/start') return enviar(chatId, `Olá, Jean. Sou o JARVIS, agora também no Telegram. Pode perguntar em texto; uso o vault do projeto e cito as notas.\n\nFaço rotinas de nível 0-1: briefing 06:30, revisão 21:00 com diário, reindexação e status. Nada destrutivo — nível 2+ sempre pede seu "sim".\n\n${AJUDA}`);
@@ -152,7 +167,7 @@ export function criarTelegram({ token, chatPermitido, dataDir, perguntar, lerCon
       const idx = s.indexado ? new Date(s.indexado).toLocaleString('pt-BR', { timeZone: 'America/Rio_Branco' }) : '—';
       const d = rotinas ? rotinas.dados() : null;
       const vps = rotinas ? (await rotinas.vpsLinha()) : '';
-      return enviar(chatId, `JARVIS no ar há ${h}h${String(m).padStart(2, '0')}min\nNuvem: ${s.modelo} (Ollama Cloud, sem fallback pago)\nModelo local: ${s.local ? `ligado (${s.localModelo})` : 'desligado'}\nReserva 9Router: ${s.reserva ? `ligada (${s.reserva})` : 'desligada'}\nVault: ${s.notas} notas, ${s.trechos} trechos (indexado ${idx}, Acre)\nRotinas: ${d ? (d.pausado ? `PAUSADAS (briefing ${d.briefing} · revisão ${d.revisao})` : `briefing ${d.briefing} · revisão ${d.revisao} (Acre)`) : 'não ativas'}${vps ? '\n' + vps : ''}\nConfirmações pendentes: ${confirmacoes.pendentes(chatId)}\n\n${textoResumo(await resumo(1))}`);
+      return enviar(chatId, `JARVIS no ar há ${h}h${String(m).padStart(2, '0')}min\nNuvem: ${s.modelo} (Ollama Cloud, sem fallback pago)\nModelo local: ${s.local ? `ligado (${s.localModelo})` : 'desligado'}\nReserva 9Router: ${s.reserva ? `ligada (${s.reserva})` : 'desligada'}\nVault: ${s.notas} notas, ${s.trechos} trechos (indexado ${idx}, Acre)\nRotinas: ${d ? (d.pausado ? `PAUSADAS (briefing ${d.briefing} · revisão ${d.revisao})` : `briefing ${d.briefing} · revisão ${d.revisao} (Acre)`) : 'não ativas'}${vps ? '\n' + vps : ''}${s.voicebox ? '\nVoicebox: ' + (s.voicebox.ok ? ('ok pelo ' + (s.voicebox.alvo === 'pc' ? 'PC' : 'VPS')) : ('indisponível (' + (s.voicebox.motivo || '?') + ')')) : '\nVoicebox: desligado'}\nConfirmações pendentes: ${confirmacoes.pendentes(chatId)}\n\n${textoResumo(await resumo(1))}`);
     }
     if (cmd === '/testesim') {
       const c = confirmacoes.criar({ nivel: NIVEL.SIM, acao: 'teste do botão de confirmação', alvo: 'nenhum', canal: 'telegram', chatId });
@@ -171,7 +186,54 @@ export function criarTelegram({ token, chatPermitido, dataDir, perguntar, lerCon
       if (!textoGithub) return enviar(chatId, 'GitHub (Docker MCP) não está ligado nesta instalação.');
       return enviar(chatId, await textoGithub());
     }
+    if (cmd === '/mestre') {
+      if (!mestre?.ativa) return enviar(chatId, 'Mestre do PC: desligado (MESTRE_MCP=0 ou túnel do PC ainda não existe).');
+      if (!args) return enviar(chatId, await textoMestre());
+      const [nome, ...resto] = args.split(/\s+/); const r = resto.join(' ').trim();
+      let a = {};
+      if (r.startsWith('{')) { try { a = JSON.parse(r); } catch { return enviar(chatId, 'JSON inválido. Nada foi feito.'); } }
+      else if (r) a = nome === 'run_operation' ? { operation: r } : { texto: r };
+      const p = mestre.prepararAcao({ confirmacoes, nome, args: a, canal: 'telegram', chatId, auditar: e => auditar({ canal: 'telegram', ...e }) });
+      if (p.recusado) return enviar(chatId, p.motivo);
+      if (p.executarAgora) { try { const x = await p.executarAgora(); return enviar(chatId, String(x.texto).slice(0, 3500)); } catch (e) { return enviar(chatId, 'Mestre do PC: ' + e.message); } }
+      return enviar(chatId, `Ação de nível 2: ${p.rotulo}\nConfirme no botão (10 min, uso único).`,
+        { reply_markup: { inline_keyboard: [[{ text: '✅ Confirmar', callback_data: `cf:${p.id}` }, { text: '✖️ Cancelar', callback_data: `cc:${p.id}` }]] } });
+    }
+    if (cmd === '/voz') {
+      if (!voz?.ativa) return enviar(chatId, textoVoz ? await textoVoz() : textoVozStatus({}, { ligada: false }));
+      const ped = interpretarPedidoVoz(`/voz ${args}`.trim());
+      if (!ped || ped.acao === 'status') return enviar(chatId, await statusVozChat(chatId));
+      const conv = chats[chatId] ? await lerConv(chats[chatId]).catch(() => null) : null;
+      if (ped.acao === 'ligar') {
+        if (!conv) return enviar(chatId, 'Mande uma mensagem primeiro, depois diga "responder em áudio" ou /voz ligar.');
+        conv.voz = true; await salvarConv(conv);
+        return enviar(chatId, 'Neste chat, as próximas respostas também saem em áudio. /voz off (ou "só texto") desliga. /voz <frase> gera um áudio avulso.');
+      }
+      if (ped.acao === 'desligar') {
+        if (conv) { conv.voz = false; await salvarConv(conv); }
+        return enviar(chatId, 'Neste chat, voltei a responder só em texto. /voz <frase> ainda gera um áudio avulso.');
+      }
+      if (ped.acao === 'falar') return falarTelegram(chatId, ped.texto);
+    }
     return enviar(chatId, `Comando desconhecido.\n\n${AJUDA}`);
+  }
+
+  async function statusVozChat(chatId) {
+    const conv = chats[chatId] ? await lerConv(chats[chatId]).catch(() => null) : null;
+    const s = voz?.ativa ? await voz.saudavel() : { ok: false, motivo: 'desligado' };
+    return textoVozStatus(s, { ligada: Boolean(voz?.ativa), modoConversa: Boolean(conv?.voz) });
+  }
+
+  async function falarTelegram(chatId, texto) {
+    await api('sendChatAction', { chat_id: chatId, action: 'record_voice' }).catch(() => {});
+    try {
+      const r = await voz.gerar(texto);
+      const cap = r.alvo === 'pc' ? 'Voicebox · PC' : 'Voicebox · VPS';
+      const envio = await enviarVoz(chatId, r.ogg, `${cap} · ${r.ms} ms`);
+      if (!envio?.ok) await enviar(chatId, `Gerei o áudio, mas o Telegram recusou o envio: ${envio?.description || 'erro'}.`);
+    } catch (e) {
+      await enviar(chatId, 'Voicebox: ' + e.message);
+    }
   }
 
   async function pedidoHermesTelegram(chatId, texto) {
@@ -198,12 +260,28 @@ export function criarTelegram({ token, chatPermitido, dataDir, perguntar, lerCon
     digitando(); const t = setInterval(digitando, 4500);
     try {
       if (await pedidoHermesTelegram(chatId, texto)) return;
+      const pedVoz = interpretarPedidoVoz(texto);
+      if (pedVoz) {
+        if (!voz?.ativa && pedVoz.acao !== 'status') {
+          await enviar(chatId, textoVozStatus({}, { ligada: false }));
+          return;
+        }
+        if (pedVoz.acao === 'status') { await enviar(chatId, await statusVozChat(chatId)); return; }
+        if (pedVoz.acao === 'ligar' || pedVoz.acao === 'desligar' || pedVoz.acao === 'falar') {
+          await comando(chatId, '/voz', pedVoz.acao === 'falar' ? pedVoz.texto : pedVoz.acao === 'ligar' ? 'ligar' : 'off');
+          return;
+        }
+      }
       const conv = await convDoChat(chatId, texto);
       const { resposta, fontes, erro, rota } = await perguntar(conv, texto, { canal: 'telegram' });
       let saida = textoPuro(resposta || '');
       if (saida && rota !== 'regras' && rota !== 'plano-b-regras' && fontes.length && !/fontes\s*:/i.test(saida)) saida += `\n\n📎 Notas consultadas: ${fontes.map(f => `[[${f}]]`).join(' · ')}`;
       if (erro && rota !== 'plano-b-regras') saida = (saida ? saida + '\n\n' : '') + `⚠️ Erro do modelo: ${erro}\n(Sem fallback pago.)`;
       await enviar(chatId, saida || '⚠️ Resposta vazia.');
+      if (voz?.ativa && conv.voz && saida) {
+        try { await falarTelegram(chatId, saida); }
+        catch (e) { await enviar(chatId, 'Não consegui falar a resposta: ' + e.message); }
+      }
     } finally { clearInterval(t); }
   }
 

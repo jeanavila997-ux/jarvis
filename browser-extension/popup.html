@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>JARVIS</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <header>
+      <div class="brand"><span class="orb"></span><div><strong>JARVIS</strong><small id="status">Verificando…</small></div></div>
+      <button id="settings" class="icon" title="Configurações" aria-label="Configurações">⚙</button>
+    </header>
+    <nav aria-label="Atalhos">
+      <button data-command="saude">Saúde</button>
+      <button data-command="/hermes">Hermes</button>
+      <button data-command="/mestre">Mestre</button>
+    </nav>
+    <main id="messages" aria-live="polite">
+      <article class="assistant">Olá, Jean. Estou conectado ao seu ecossistema. Como posso ajudar?</article>
+    </main>
+    <form id="chatForm">
+      <textarea id="prompt" rows="2" maxlength="12000" placeholder="Fale com o JARVIS…" required></textarea>
+      <button id="send" type="submit">Enviar</button>
+    </form>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

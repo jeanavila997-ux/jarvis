@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Configurar JARVIS</title>
+    <link rel="stylesheet" href="options.css">
+  </head>
+  <body>
+    <main>
+      <h1>Configurar JARVIS</h1>
+      <p>Escolha o servidor. A senha fica apenas na sessão do navegador e é apagada quando ele fecha.</p>
+      <div class="presets">
+        <button type="button" data-url="http://127.0.0.1:3200" data-user="">PC local</button>
+        <button type="button" data-url="https://jarvis.72-62-11-116.sslip.io" data-user="jean">VPS do Jean</button>
+      </div>
+      <form id="settingsForm">
+        <label>URL<input id="url" type="url" required></label>
+        <label>Usuário<input id="user" type="text" autocomplete="username"></label>
+        <label>Senha da sessão<input id="password" type="password" autocomplete="current-password"></label>
+        <div class="actions"><button type="submit">Salvar e testar</button><button id="clearPassword" type="button" class="secondary">Limpar senha</button></div>
+      </form>
+      <output id="result"></output>
+      <section>
+        <h2>Segurança</h2>
+        <ul>
+          <li>HTTP só é aceito em localhost.</li>
+          <li>A extensão não lê abas, histórico, cookies ou páginas.</li>
+          <li>Ações de nível 2 continuam exigindo confirmação no Telegram.</li>
+        </ul>
+      </section>
+    </main>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

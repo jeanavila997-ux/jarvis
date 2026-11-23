@@ -94,6 +94,21 @@ docker compose logs -f jarvis # logs
 ```
 Saúde (dentro da VPS): `docker compose exec jarvis wget -qO- http://127.0.0.1:3200/api/saude`
 
+### PC: auto-início no boot (Agendador de Tarefas)
+
+Sobe o JARVIS local 30 s após o logon do Jean, janela oculta, logs em `data/jarvis-stdout.log`:
+
+```powershell
+cd "C:\Users\Jean\Projetos\ECOSSISTEMA JEAN\jarvis-local"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\instalar-autostart.ps1     # instala (idempotente)
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\desinstalar-autostart.ps1  # remove a tarefa
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\desinstalar-autostart.ps1 -Parar  # remove e para o serviço
+```
+
+- tarefa agendada: `Jarvis_Local_Startup` (executa `scripts\iniciar-jarvis.ps1`)
+- o iniciar pula se a porta 3200 já estiver em uso — nunca sobe dois JARVIS
+- toca só na tarefa criada por ele; não mexe nas do Mestre do PC
+
 ## Atualizar o vault
 1. Copie o vault novo para `/opt/apps/jarvis/vault/` (sem `.obsidian/`, `.git/`, `.env`, zips). Exemplo a partir da box:
    `rsync -a --delete --exclude .obsidian/ --exclude .git/ --exclude .trash/ --exclude '.env*' --exclude '*.zip' ./vault/ vps:/opt/apps/jarvis/vault/`

@@ -48,6 +48,8 @@ services:
       HOST: 0.0.0.0
       PORT: "3200"
       VAULT_DIR: /app/vault
+      # O que do vault pode ir para modelo externo: sem-privadas (padrão) | nada | tudo.
+      JARVIS_VAULT_NUVEM: ${JARVIS_VAULT_NUVEM:-sem-privadas}
       DATA_DIR: /app/data
       TZ: America/Rio_Branco
       # Ollama do container acima, com GPU (o .env.local não precisa de URL do Ollama)

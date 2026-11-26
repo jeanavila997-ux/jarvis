@@ -26,17 +26,93 @@ async function listar(dir) {
 }
 
 function parseNota(raw, rel) {
-  let fm = {}, corpo = raw.replace(/^\uFEFF/, '');
+  let fm = {}, corpo = raw.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
   const m = corpo.match(/^---\n([\s\S]*?)\n---\n?/);
+  const fmTexto = m ? m[1] : '';
   if (m) {
     corpo = corpo.slice(m[0].length);
+    let chave = null;
     for (const l of m[1].split('\n')) {
+      const item = l.match(/^\s*-\s*(.*)$/); // item de lista, com ou sem recuo
+      if (item && chave) { fm[chave] = `${fm[chave]} ${valorYaml(item[1])}`.trim(); continue; }
       const k = l.match(/^(\w+):\s*(.*)$/);
-      if (k) fm[k[1]] = k[2].replace(/^["']|["']$/g, '');
+      if (k) { chave = k[1]; fm[k[1]] = valorYaml(k[2]); }
     }
   }
   const nome = path.basename(rel).replace(/\.(md|canvas)$/i, '');
-  return { nome, titulo: fm.title || nome, tags: fm.tags || '', status: fm.status || '', corpo };
+  const privada = notaPrivada(fm) || marcaPrivadaNoTexto(fmTexto) || TAG_PRIVADA_CORPO.test(normalizar(corpo));
+  return { nome, titulo: fm.title || nome, tags: fm.tags || '', status: fm.status || '', corpo, privada };
+}
+
+// Valor YAML simples: entre aspas fica como está; sem aspas, "# comentário" no fim é descartado.
+function valorYaml(v) {
+  const t = String(v).trim();
+  const q = t.match(/^(["'])(.*)\1/);
+  if (q) return q[2];
+  return t.replace(/\s+#.*$/, '').trim();
+}
+
+// Sensibilidade (decisão do Jean, não do modelo). Uma nota é PRIVADA se o frontmatter tiver:
+//   sensibilidade: privada | confidencial | secreta | sensivel
+//   nuvem: nao            (ou false / no)
+//   tags com privado, privada ou confidencial
+// Notas privadas continuam indexadas (o modelo local e o plano B por regras podem usá-las),
+// mas nunca entram num prompt enviado a serviço externo.
+export function notaPrivada(fm = {}) {
+  const v = x => normalizar(String(x || '')).replace(/[\[\]"',#]/g, ' ').trim();
+  if (/^(privad[ao]|confidencial|secret[ao]|sensivel)$/.test(v(fm.sensibilidade))) return true;
+  if (/^(nao|false|no|0)$/.test(v(fm.nuvem))) return true;
+  return v(fm.tags).split(/\s+/).some(t => /^(privad[ao]|confidencial)$/.test(t));
+}
+
+// Rede de segurança que falha para o lado seguro: o leitor de frontmatter acima é simples e não entende
+// todo YAML (listas entre colchetes em várias linhas, blocos, etc.). Por isso, além dele, qualquer uma
+// destas marcas em QUALQUER lugar do frontmatter torna a nota privada:
+//   as palavras privado, privada, confidencial, secreto, secreta, sensivel (palavra inteira)
+//   nuvem: nao / false / no
+// E no corpo, as tags #privado, #privada ou #confidencial. Um falso positivo só deixa a nota em casa.
+const PALAVRA_PRIVADA = /^(privad[ao]|confidencial|secret[ao]|sensivel)$/;
+const TAG_PRIVADA_CORPO = /(^|[^\w&/#])#(privad[ao]|confidencial)(?![\w/-])/m; // aceita (#privado), **#privado** etc.
+export function marcaPrivadaNoTexto(fmTexto = '') {
+  const t = normalizar(String(fmTexto));
+  if (/\bnuvem["']?\s*:\s*["']?(nao|false|no|0)\b/.test(t)) return true; // também "nuvem": false e {nuvem: false}
+  return t.split(/[^a-z0-9_]+/).some(p => PALAVRA_PRIVADA.test(p));
+}
+
+// Política do que pode sair do vault para um modelo externo (env JARVIS_VAULT_NUVEM):
+//   sem-privadas (padrão): tudo, menos notas privadas
+//   nada: nenhum trecho do vault vai para fora
+//   tudo: comportamento antigo (não recomendado)
+export const POLITICAS_NUVEM = ['sem-privadas', 'nada', 'tudo'];
+export function politicaNuvem(valor) {
+  const p = String(valor || '').trim().toLowerCase();
+  return POLITICAS_NUVEM.includes(p) ? p : 'sem-privadas';
+}
+// Busca para um destino EXTERNO, já respeitando a política (filtra antes dos limites).
+export function buscarParaFora(indice, consulta, politica = 'sem-privadas') {
+  if (politica === 'nada') return [];
+  if (politica === 'tudo') return indice.buscar(consulta);
+  return trechosParaNuvem(indice.buscar(consulta, { semPrivadas: true }), politica);
+}
+
+// Decide que contexto vai para cada destino da rota nuvem.
+//   principal: o modelo "nuvem" (pode ser um Ollama local, aí recebe tudo)
+//   reserva:   a reserva 9Router é SEMPRE externa, então só recebe o permitido
+//   retidos:   quantos trechos da busca local ficaram de fora do principal
+export function planejarContexto({ locais, externos, principalLocal }) {
+  const chave = t => `${t.arquivo}\u0000${t.texto}`;
+  const enviados = new Set(externos.map(chave));
+  return {
+    principal: principalLocal ? locais : externos,
+    reserva: externos,
+    retidos: principalLocal ? 0 : locais.filter(t => !enviados.has(chave(t))).length,
+  };
+}
+
+export function trechosParaNuvem(trechos, politica = 'sem-privadas') {
+  if (politica === 'nada') return [];
+  if (politica === 'tudo') return trechos;
+  return trechos.filter(t => !t.privada);
 }
 
 function canvasTexto(raw) {
@@ -62,7 +138,7 @@ export class Indice {
   async reindexar() {
     const arquivos = await listar(this.dir);
     const chunks = [], ignorados = [];
-    let notas = 0;
+    let notas = 0, privadas = 0;
     for (const f of arquivos) {
       const rel = path.relative(this.dir, f);
       if ((await stat(f)).size > 512 * 1024) { ignorados.push(rel + ' (grande demais)'); continue; }
@@ -71,22 +147,24 @@ export class Indice {
       if (f.endsWith('.canvas')) raw = canvasTexto(raw);
       const n = parseNota(raw, rel);
       notas++;
+      if (n.privada) privadas++;
       for (const texto of dividir(n.corpo)) {
         const tk = tokens(`${n.titulo} ${n.titulo} ${n.tags} ${texto}`);
         const tf = new Map();
         for (const t of tk) tf.set(t, (tf.get(t) || 0) + 1);
-        chunks.push({ nota: n.nome, titulo: n.titulo, arquivo: rel, texto, tf, len: tk.length });
+        chunks.push({ nota: n.nome, titulo: n.titulo, arquivo: rel, texto, tf, len: tk.length, privada: n.privada });
       }
     }
     const df = new Map();
     for (const c of chunks) for (const t of c.tf.keys()) df.set(t, (df.get(t) || 0) + 1);
-    this.chunks = chunks; this.df = df; this.ignorados = ignorados; this.notas = notas;
+    this.chunks = chunks; this.df = df; this.ignorados = ignorados; this.notas = notas; this.privadas = privadas;
     this.avg = chunks.reduce((s, c) => s + c.len, 0) / (chunks.length || 1);
     this.atualizado = new Date().toISOString();
-    return { notas, trechos: chunks.length, ignorados };
+    return { notas, privadas, trechos: chunks.length, ignorados };
   }
 
-  buscar(consulta, { maxTrechos = 8, maxChars = 10000 } = {}) {
+  // semPrivadas: tira as notas privadas ANTES de aplicar os limites, para notas públicas relevantes ocuparem a vaga.
+  buscar(consulta, { maxTrechos = 8, maxChars = 10000, semPrivadas = false } = {}) {
     const q = [...new Set(tokens(consulta))];
     if (!q.length || !this.chunks.length) return [];
     const N = this.chunks.length, k1 = 1.4, b = 0.75;
@@ -99,7 +177,7 @@ export class Indice {
         s += idf * (f * (k1 + 1)) / (f + k1 * (1 - b + b * c.len / this.avg));
       }
       return { c, s };
-    }).filter(x => x.s > 0).sort((a, b) => b.s - a.s);
+    }).filter(x => x.s > 0 && !(semPrivadas && x.c.privada)).sort((a, b) => b.s - a.s);
     const sel = []; let total = 0;
     for (const { c, s } of pont) {
       if (sel.length >= maxTrechos || total + c.texto.length > maxChars) continue;

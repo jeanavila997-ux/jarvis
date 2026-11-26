@@ -442,4 +442,6 @@ const rotinas = telegram ? criarRotinas({
 telegram?.ligarRotinas(rotinas);
 telegram?.iniciar();
 await rotinas?.ligar();
-for (const s of ['SIGTERM', 'SIGINT']) process.on(s, () => { telegram?.parar(); rotinas?.parar(); nvidia?.fechar?.().catch(() => {}); dockerMcp?.fechar?.().catch(() => {}); mestre?.fechar?.().catch(() => {}); voz?.fechar?.().catch(() => {}); server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 3000).unref(); });
+// Desligamento: alguns fechar() devolvem undefined (sessão nunca aberta) ou lançam; nada disso pode impedir o server.close.
+const fecharSeguro = obj => { try { return Promise.resolve(obj?.fechar?.()).catch(() => {}); } catch { return Promise.resolve(); } };
+for (const s of ['SIGTERM', 'SIGINT']) process.on(s, () => { try { telegram?.parar(); } catch {} try { rotinas?.parar(); } catch {} [nvidia, dockerMcp, mestre, voz].forEach(fecharSeguro); server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 3000).unref(); });

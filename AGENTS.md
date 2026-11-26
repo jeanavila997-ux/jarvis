@@ -6,7 +6,9 @@ Fale e escreva em **pt-BR**, no modo professor: explique o porquê, sem jargão 
 
 ## O que é este projeto
 
-Servidor Node (sem dependências externas) que responde em português, consulta o vault Obsidian e fala com o Hermes, o nvidia-app e o Mestre do PC. A `main` no GitHub pode estar atrás da branch `vps-main` (o que roda na VPS). Há um CLI mais completo na branch `cli`; os scripts em `codex/bin/` são independentes e não esperam que essa branch esteja mesclada.
+Servidor Node (sem dependências externas) que responde em português, consulta o vault Obsidian e fala com o Hermes, o nvidia-app e o Mestre do PC.
+
+**A `main` é a fonte oficial.** Deploy na VPS e instalação no PC só a partir da `main`, depois de conferir o commit (`git log -1`). A antiga `vps-main` já está inteira dentro da `main` e não deve ser usada para deploy. Não faça deploy de worktrees, pastas temporárias ou branches já mescladas. Há um CLI mais completo na branch `cli` (ainda não mesclado); os scripts em `codex/bin/` são independentes dele.
 
 Como rodar os testes: `npm test` (precisa de Node 22 ou mais novo; são testes unitários, sem rede).
 

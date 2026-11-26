@@ -72,10 +72,10 @@ export function notaPrivada(fm = {}) {
 //   nuvem: nao / false / no
 // E no corpo, as tags #privado, #privada ou #confidencial. Um falso positivo só deixa a nota em casa.
 const PALAVRA_PRIVADA = /^(privad[ao]|confidencial|secret[ao]|sensivel)$/;
-const TAG_PRIVADA_CORPO = /(^|\s)#(privad[ao]|confidencial)(?![\w/-])/m;
+const TAG_PRIVADA_CORPO = /(^|[^\w&/#])#(privad[ao]|confidencial)(?![\w/-])/m; // aceita (#privado), **#privado** etc.
 export function marcaPrivadaNoTexto(fmTexto = '') {
   const t = normalizar(String(fmTexto));
-  if (/(^|\n)\s*nuvem\s*:\s*["']?(nao|false|no|0)\b/.test(t)) return true;
+  if (/\bnuvem["']?\s*:\s*["']?(nao|false|no|0)\b/.test(t)) return true; // também "nuvem": false e {nuvem: false}
   return t.split(/[^a-z0-9_]+/).some(p => PALAVRA_PRIVADA.test(p));
 }
 

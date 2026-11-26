@@ -124,3 +124,14 @@ test('marcaPrivadaNoTexto usa palavra inteira, não pedaço', () => {
   assert.equal(marcaPrivadaNoTexto('nuvem: "não"'), true);
   assert.equal(marcaPrivadaNoTexto('nuvem: sim'), false);
 });
+
+test('chave entre aspas e tag após pontuação também protegem', () => comVault({
+  'aspas-duplas.md': '---\n"nuvem": false\n---\nração a',
+  'aspas-simples.md': "---\n'nuvem': false\n---\nração b",
+  'parenteses.md': 'ração c (#privado)',
+  'negrito.md': 'ração d **#confidencial**',
+  'pub.md': 'ração e veja site.com/#privado e &#privado',
+}, async idx => {
+  assert.equal(idx.privadas, 4);
+  assert.deepEqual(buscarParaFora(idx, 'ração', 'sem-privadas').map(x => x.nota), ['pub']);
+}));

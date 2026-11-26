@@ -32,7 +32,7 @@ function parseNota(raw, rel) {
     corpo = corpo.slice(m[0].length);
     let chave = null;
     for (const l of m[1].split('\n')) {
-      const item = l.match(/^\s+-\s*(.*)$/);
+      const item = l.match(/^\s*-\s*(.*)$/); // item de lista, com ou sem recuo
       if (item && chave) { fm[chave] = `${fm[chave]} ${valorYaml(item[1])}`.trim(); continue; }
       const k = l.match(/^(\w+):\s*(.*)$/);
       if (k) { chave = k[1]; fm[k[1]] = valorYaml(k[2]); }

@@ -98,3 +98,12 @@ test('reserva 9Router nunca recebe privadas, mesmo com principal local', () => c
   assert.deepEqual(comNuvem.principal.map(t => t.nota), ['pub']);
   assert.equal(comNuvem.retidos, 1);
 }));
+
+test('lista YAML sem recuo (tags:\\n- privado) também marca a nota', () => comVault({
+  'sem-recuo.md': '---\ntags:\n- fazenda\n- privado\n---\nração sem recuo',
+  'pub.md': 'ração pública',
+}, async idx => {
+  const t = idx.buscar('ração').find(x => x.nota === 'sem-recuo');
+  assert.equal(t.privada, true);
+  assert.deepEqual(buscarParaFora(idx, 'ração', 'sem-privadas').map(x => x.nota), ['pub']);
+}));

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { Indice, notaPrivada, politicaNuvem, trechosParaNuvem, buscarParaFora, planejarContexto } from '../src/retrieval.mjs';
+import { Indice, notaPrivada, marcaPrivadaNoTexto, politicaNuvem, trechosParaNuvem, buscarParaFora, planejarContexto } from '../src/retrieval.mjs';
 
 test('notaPrivada reconhece sensibilidade, nuvem: nao e tags', () => {
   assert.equal(notaPrivada({ sensibilidade: 'privada' }), true);
@@ -107,3 +107,20 @@ test('lista YAML sem recuo (tags:\\n- privado) também marca a nota', () => comV
   assert.equal(t.privada, true);
   assert.deepEqual(buscarParaFora(idx, 'ração', 'sem-privadas').map(x => x.nota), ['pub']);
 }));
+
+test('rede de segurança: qualquer formato YAML com a marca torna a nota privada', () => comVault({
+  'colchetes.md': '---\ntags: [\n  privado,\n  cliente\n]\n---\nração colchetes',
+  'bloco.md': '---\nmeta:\n  nivel: confidencial\n---\nração bloco',
+  'corpo.md': 'ração com tag no corpo #privado',
+  'pub.md': '---\ntags: [cliente]\n---\nração pública sem #privacidade',
+}, async idx => {
+  assert.equal(idx.privadas, 3);
+  assert.deepEqual(buscarParaFora(idx, 'ração', 'sem-privadas').map(x => x.nota), ['pub']);
+}));
+
+test('marcaPrivadaNoTexto usa palavra inteira, não pedaço', () => {
+  assert.equal(marcaPrivadaNoTexto('title: Dados privados e confidenciais'), false);
+  assert.equal(marcaPrivadaNoTexto('title: Projeto privado'), true);
+  assert.equal(marcaPrivadaNoTexto('nuvem: "não"'), true);
+  assert.equal(marcaPrivadaNoTexto('nuvem: sim'), false);
+});

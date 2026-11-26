@@ -28,6 +28,7 @@ async function listar(dir) {
 function parseNota(raw, rel) {
   let fm = {}, corpo = raw.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
   const m = corpo.match(/^---\n([\s\S]*?)\n---\n?/);
+  const fmTexto = m ? m[1] : '';
   if (m) {
     corpo = corpo.slice(m[0].length);
     let chave = null;
@@ -39,7 +40,8 @@ function parseNota(raw, rel) {
     }
   }
   const nome = path.basename(rel).replace(/\.(md|canvas)$/i, '');
-  return { nome, titulo: fm.title || nome, tags: fm.tags || '', status: fm.status || '', corpo, privada: notaPrivada(fm) };
+  const privada = notaPrivada(fm) || marcaPrivadaNoTexto(fmTexto) || TAG_PRIVADA_CORPO.test(normalizar(corpo));
+  return { nome, titulo: fm.title || nome, tags: fm.tags || '', status: fm.status || '', corpo, privada };
 }
 
 // Valor YAML simples: entre aspas fica como está; sem aspas, "# comentário" no fim é descartado.
@@ -61,6 +63,20 @@ export function notaPrivada(fm = {}) {
   if (/^(privad[ao]|confidencial|secret[ao]|sensivel)$/.test(v(fm.sensibilidade))) return true;
   if (/^(nao|false|no|0)$/.test(v(fm.nuvem))) return true;
   return v(fm.tags).split(/\s+/).some(t => /^(privad[ao]|confidencial)$/.test(t));
+}
+
+// Rede de segurança que falha para o lado seguro: o leitor de frontmatter acima é simples e não entende
+// todo YAML (listas entre colchetes em várias linhas, blocos, etc.). Por isso, além dele, qualquer uma
+// destas marcas em QUALQUER lugar do frontmatter torna a nota privada:
+//   as palavras privado, privada, confidencial, secreto, secreta, sensivel (palavra inteira)
+//   nuvem: nao / false / no
+// E no corpo, as tags #privado, #privada ou #confidencial. Um falso positivo só deixa a nota em casa.
+const PALAVRA_PRIVADA = /^(privad[ao]|confidencial|secret[ao]|sensivel)$/;
+const TAG_PRIVADA_CORPO = /(^|\s)#(privad[ao]|confidencial)(?![\w/-])/m;
+export function marcaPrivadaNoTexto(fmTexto = '') {
+  const t = normalizar(String(fmTexto));
+  if (/(^|\n)\s*nuvem\s*:\s*["']?(nao|false|no|0)\b/.test(t)) return true;
+  return t.split(/[^a-z0-9_]+/).some(p => PALAVRA_PRIVADA.test(p));
 }
 
 // Política do que pode sair do vault para um modelo externo (env JARVIS_VAULT_NUVEM):

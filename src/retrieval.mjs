@@ -26,17 +26,48 @@ async function listar(dir) {
 }
 
 function parseNota(raw, rel) {
-  let fm = {}, corpo = raw.replace(/^\uFEFF/, '');
+  let fm = {}, corpo = raw.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
   const m = corpo.match(/^---\n([\s\S]*?)\n---\n?/);
   if (m) {
     corpo = corpo.slice(m[0].length);
+    let chave = null;
     for (const l of m[1].split('\n')) {
+      const item = l.match(/^\s+-\s*(.*)$/);
+      if (item && chave) { fm[chave] = `${fm[chave]} ${item[1].replace(/^["']|["']$/g, '')}`.trim(); continue; }
       const k = l.match(/^(\w+):\s*(.*)$/);
-      if (k) fm[k[1]] = k[2].replace(/^["']|["']$/g, '');
+      if (k) { chave = k[1]; fm[k[1]] = k[2].replace(/^["']|["']$/g, ''); }
     }
   }
   const nome = path.basename(rel).replace(/\.(md|canvas)$/i, '');
-  return { nome, titulo: fm.title || nome, tags: fm.tags || '', status: fm.status || '', corpo };
+  return { nome, titulo: fm.title || nome, tags: fm.tags || '', status: fm.status || '', corpo, privada: notaPrivada(fm) };
+}
+
+// Sensibilidade (decisão do Jean, não do modelo). Uma nota é PRIVADA se o frontmatter tiver:
+//   sensibilidade: privada | confidencial | secreta | sensivel
+//   nuvem: nao            (ou false / no)
+//   tags com privado, privada ou confidencial
+// Notas privadas continuam indexadas (o modelo local e o plano B por regras podem usá-las),
+// mas nunca entram num prompt enviado a serviço externo.
+export function notaPrivada(fm = {}) {
+  const v = x => normalizar(String(x || '')).replace(/[\[\]"',#]/g, ' ').trim();
+  if (/^(privad[ao]|confidencial|secret[ao]|sensivel)$/.test(v(fm.sensibilidade))) return true;
+  if (/^(nao|false|no|0)$/.test(v(fm.nuvem))) return true;
+  return v(fm.tags).split(/\s+/).some(t => /^(privad[ao]|confidencial)$/.test(t));
+}
+
+// Política do que pode sair do vault para um modelo externo (env JARVIS_VAULT_NUVEM):
+//   sem-privadas (padrão): tudo, menos notas privadas
+//   nada: nenhum trecho do vault vai para fora
+//   tudo: comportamento antigo (não recomendado)
+export const POLITICAS_NUVEM = ['sem-privadas', 'nada', 'tudo'];
+export function politicaNuvem(valor) {
+  const p = String(valor || '').trim().toLowerCase();
+  return POLITICAS_NUVEM.includes(p) ? p : 'sem-privadas';
+}
+export function trechosParaNuvem(trechos, politica = 'sem-privadas') {
+  if (politica === 'nada') return [];
+  if (politica === 'tudo') return trechos;
+  return trechos.filter(t => !t.privada);
 }
 
 function canvasTexto(raw) {
@@ -62,7 +93,7 @@ export class Indice {
   async reindexar() {
     const arquivos = await listar(this.dir);
     const chunks = [], ignorados = [];
-    let notas = 0;
+    let notas = 0, privadas = 0;
     for (const f of arquivos) {
       const rel = path.relative(this.dir, f);
       if ((await stat(f)).size > 512 * 1024) { ignorados.push(rel + ' (grande demais)'); continue; }
@@ -71,19 +102,20 @@ export class Indice {
       if (f.endsWith('.canvas')) raw = canvasTexto(raw);
       const n = parseNota(raw, rel);
       notas++;
+      if (n.privada) privadas++;
       for (const texto of dividir(n.corpo)) {
         const tk = tokens(`${n.titulo} ${n.titulo} ${n.tags} ${texto}`);
         const tf = new Map();
         for (const t of tk) tf.set(t, (tf.get(t) || 0) + 1);
-        chunks.push({ nota: n.nome, titulo: n.titulo, arquivo: rel, texto, tf, len: tk.length });
+        chunks.push({ nota: n.nome, titulo: n.titulo, arquivo: rel, texto, tf, len: tk.length, privada: n.privada });
       }
     }
     const df = new Map();
     for (const c of chunks) for (const t of c.tf.keys()) df.set(t, (df.get(t) || 0) + 1);
-    this.chunks = chunks; this.df = df; this.ignorados = ignorados; this.notas = notas;
+    this.chunks = chunks; this.df = df; this.ignorados = ignorados; this.notas = notas; this.privadas = privadas;
     this.avg = chunks.reduce((s, c) => s + c.len, 0) / (chunks.length || 1);
     this.atualizado = new Date().toISOString();
-    return { notas, trechos: chunks.length, ignorados };
+    return { notas, privadas, trechos: chunks.length, ignorados };
   }
 
   buscar(consulta, { maxTrechos = 8, maxChars = 10000 } = {}) {

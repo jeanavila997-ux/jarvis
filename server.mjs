@@ -4,7 +4,7 @@ import { readFile, writeFile, readdir, mkdir, rename } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Indice } from './src/retrieval.mjs';
+import { Indice, politicaNuvem, trechosParaNuvem } from './src/retrieval.mjs';
 import { montarPrompt, montarPromptLocal } from './src/prompt.proposta.mjs';
 import { chatOllama } from './src/llm.mjs';
 import { nivelPorRegras, avisoGuarda } from './src/permissoes.mjs';
@@ -31,6 +31,8 @@ const MODEL = process.env.JARVIS_MODEL || 'glm-5.3-flash';
 const OLLAMA_URL = (process.env.OLLAMA_URL || 'https://ollama.com').replace(/\/$/, '');
 const API_KEY = process.env.OLLAMA_API_KEY || '';
 const VAULT_DIR = process.env.VAULT_DIR || './vault';
+// O que do vault pode ir para modelo externo: sem-privadas (padrão) | nada | tudo. Ver src/retrieval.mjs.
+const VAULT_NUVEM = politicaNuvem(process.env.JARVIS_VAULT_NUVEM);
 const DATA_DIR = process.env.DATA_DIR || './data';
 const CONV_DIR = path.join(DATA_DIR, 'conversas');
 const MAX_HIST = Number(process.env.JARVIS_MAX_HISTORICO || 12);
@@ -127,7 +129,7 @@ const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public')
 const indice = new Indice(VAULT_DIR);
 await mkdir(CONV_DIR, { recursive: true });
 const r = await indice.reindexar();
-console.log(`[jarvis] vault indexado: ${r.notas} notas, ${r.trechos} trechos, ${r.ignorados.length} ignorados`);
+console.log(`[jarvis] vault indexado: ${r.notas} notas (${r.privadas} privadas), ${r.trechos} trechos, ${r.ignorados.length} ignorados; política de nuvem: ${VAULT_NUVEM}`);
 const THINK_LOCAL = process.env.JARVIS_THINK === '1' ? true : process.env.JARVIS_THINK === '0' ? false : undefined;
 // A URL corrente (aba Config) decide se o principal é local. O nome `ollama` do compose do PC também é local.
 function principalEhLocal() { return !exigeChaveOllama(nuvem?.url || OLLAMA_URL); }
@@ -244,7 +246,7 @@ async function perguntar(conv, texto, { onDelta = () => {}, onPensando = () => {
   const guarda = nivelPorRegras(texto);
   if (guarda.nivel >= 1) auditar(DATA_DIR, { canal, nivel: guarda.nivel, acao: 'pedido-detectado', motivo: guarda.motivos.join(', '), conversa: conv.id, resultado: 'sem-ferramenta-ligada' });
 
-  let resposta = '', erro = null, fontes = [], modelo = 'regras', tokensIn = null, tokensOut = null;
+  let resposta = '', erro = null, fontes = [], modelo = 'regras', tokensIn = null, tokensOut = null, retidos = 0;
   let dec = { rota: 'regras', motivo: '', nivel: guarda.nivel };
 
   const pedHermes = hermes.ativa ? interpretarPedidoHermes(texto) : null;
@@ -289,7 +291,10 @@ async function perguntar(conv, texto, { onDelta = () => {}, onPensando = () => {
       onRota({ rota: 'nuvem', modelo: nuvem.model });
       const linhaSkills = await skills.listarLinha();
       const corposAtivas = await skills.corpos(conv.skills || []);
-      const mensagens = [{ role: 'system', content: montarPrompt(trechos, agoraAcre()) + avisoGuarda(guarda)
+      // Privacidade: o que vai para fora passa pela política do vault. Se o "principal" for um Ollama local, nada sai.
+      const trechosFora = principalEhLocal() ? trechos : trechosParaNuvem(trechos, VAULT_NUVEM);
+      retidos = trechos.length - trechosFora.length;
+      const mensagens = [{ role: 'system', content: montarPrompt(trechosFora, agoraAcre()) + avisoGuarda(guarda)
         + (linhaSkills ? '\n\n' + linhaSkills : '')
         + (corposAtivas.length ? '\n\n' + corposAtivas.join('\n\n') : '') }, ...historico];
       let emitiu = false;
@@ -335,7 +340,7 @@ async function perguntar(conv, texto, { onDelta = () => {}, onPensando = () => {
   conv.atualizado = new Date().toISOString();
   await salvarConv(conv);
   await registrarUso(DATA_DIR, { canal, rota: dec.rota, modelo, motivo: dec.motivo, nota: dec.nota ?? null, tipo: dec.tipo ?? null, nivel: guarda.nivel,
-    ms, classif_ms: dec.classifMs ?? null, tokens_in: tokensIn, tokens_out: tokensOut, classif_tokens: dec.classifTokens ?? null,
+    ms, classif_ms: dec.classifMs ?? null, ...(retidos ? { trechos_retidos: retidos } : {}), tokens_in: tokensIn, tokens_out: tokensOut, classif_tokens: dec.classifTokens ?? null,
     ...(dec.erroLocal ? { erro_local: dec.erroLocal.slice(0, 200) } : {}), ...(dec.erroNuvem ? { erro_nuvem: dec.erroNuvem.slice(0, 200) } : {}), ...(erro ? { erro: erro.slice(0, 200) } : {}) });
   return { resposta, fontes, erro, rota: dec.rota, modelo };
 }

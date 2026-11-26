@@ -77,7 +77,21 @@ services:
       - traefik.http.routers.jarvis.rule=Host(`jarvis.72-62-11-116.sslip.io`)
       - traefik.http.routers.jarvis.entrypoints=websecure
       - traefik.http.routers.jarvis.tls.certresolver=letsencrypt
-      - traefik.http.routers.jarvis.middlewares=jarvis-auth
+      # Ordem importa: o limite de requisições vem ANTES do basic-auth, para frear tentativas de senha.
+      - traefik.http.routers.jarvis.middlewares=jarvis-ratelimit,jarvis-auth
+      # Limite por IP de origem: média de 30 requisições por minuto, com rajada de 30.
+      # Uma abertura da página faz ~8 requisições e cada mensagem 1 ou 2, então o uso normal fica abaixo.
+      # Sintaxe igual no Traefik v2 e v3. Atenção: se o Traefik estiver atrás de outro proxy/CDN,
+      # o IP de origem vira o do proxy e todos dividem o mesmo limite (ver ipstrategy na doc do Traefik).
+      - traefik.http.middlewares.jarvis-ratelimit.ratelimit.average=30
+      - traefik.http.middlewares.jarvis-ratelimit.ratelimit.period=1m
+      - traefik.http.middlewares.jarvis-ratelimit.ratelimit.burst=30
+      # Lista de IPs (opcional, DESLIGADA). O Telegram usa getUpdates (saída), então não é afetado.
+      # Para ligar: confirme a versão do Traefik na VPS (`docker exec traefik traefik version`).
+      #   v3: descomente a linha ipallowlist; v2: troque "ipallowlist" por "ipwhitelist".
+      #   Depois acrescente ",jarvis-ips" na linha de middlewares acima (antes de jarvis-auth).
+      # Cuidado: IP de celular/4G muda; prefira Tailscale se você acessa da rua.
+      # - traefik.http.middlewares.jarvis-ips.ipallowlist.sourcerange=${JARVIS_IP_ALLOWLIST:?defina JARVIS_IP_ALLOWLIST no .env}
       - traefik.http.middlewares.jarvis-auth.basicauth.users=${JARVIS_BASICAUTH_USERS:?defina JARVIS_BASICAUTH_USERS no .env}
       - traefik.http.middlewares.jarvis-auth.basicauth.realm=JARVIS
       - traefik.http.middlewares.jarvis-auth.basicauth.removeheader=true

@@ -4,7 +4,7 @@ import { readFile, writeFile, readdir, mkdir, rename } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Indice, politicaNuvem, trechosParaNuvem } from './src/retrieval.mjs';
+import { Indice, politicaNuvem, buscarParaFora, planejarContexto } from './src/retrieval.mjs';
 import { montarPrompt, montarPromptLocal } from './src/prompt.proposta.mjs';
 import { chatOllama } from './src/llm.mjs';
 import { nivelPorRegras, avisoGuarda } from './src/permissoes.mjs';
@@ -291,12 +291,17 @@ async function perguntar(conv, texto, { onDelta = () => {}, onPensando = () => {
       onRota({ rota: 'nuvem', modelo: nuvem.model });
       const linhaSkills = await skills.listarLinha();
       const corposAtivas = await skills.corpos(conv.skills || []);
-      // Privacidade: o que vai para fora passa pela política do vault. Se o "principal" for um Ollama local, nada sai.
-      const trechosFora = principalEhLocal() ? trechos : trechosParaNuvem(trechos, VAULT_NUVEM);
-      retidos = trechos.length - trechosFora.length;
-      const mensagens = [{ role: 'system', content: montarPrompt(trechosFora, agoraAcre()) + avisoGuarda(guarda)
+      // Privacidade: o que vai para fora passa pela política do vault (filtrada ANTES dos limites da busca).
+      // Se o "principal" for um Ollama local, ele recebe tudo; a reserva 9Router é sempre externa.
+      const ctx = planejarContexto({ locais: trechos, externos: buscarParaFora(indice, usuarios, VAULT_NUVEM), principalLocal: principalEhLocal() });
+      retidos = ctx.retidos;
+      const sistema = t => montarPrompt(t, agoraAcre()) + avisoGuarda(guarda)
         + (linhaSkills ? '\n\n' + linhaSkills : '')
-        + (corposAtivas.length ? '\n\n' + corposAtivas.join('\n\n') : '') }, ...historico];
+        + (corposAtivas.length ? '\n\n' + corposAtivas.join('\n\n') : '');
+      const mensagens = [{ role: 'system', content: sistema(ctx.principal) }, ...historico];
+      const mensagensReserva = ctx.reserva === ctx.principal ? mensagens : [{ role: 'system', content: sistema(ctx.reserva) }, ...historico];
+      // Fontes mostradas ao Jean = notas que o modelo que respondeu realmente recebeu.
+      fontes = [...new Set(ctx.principal.map(t => t.nota))];
       let emitiu = false;
       try {
         const local = principalEhLocal();
@@ -317,7 +322,8 @@ async function perguntar(conv, texto, { onDelta = () => {}, onPensando = () => {
             onRota({ rota: 'reserva-9router', modelo: reservaRuntime.model });
             let emitiuR = false;
             try {
-              const r = await reservaRuntime.chat({ messages: mensagens, signal, onDelta: t => { emitiuR = true; onDelta(t); } });
+              fontes = [...new Set(ctx.reserva.map(t => t.nota))];
+              const r = await reservaRuntime.chat({ messages: mensagensReserva, signal, onDelta: t => { emitiuR = true; onDelta(t); } });
               ({ resposta, tokensIn, tokensOut } = r); modelo = reservaRuntime.model; feito = true;
               dec = { ...dec, rota: 'reserva-9router', motivo: 'nuvem-falhou', erroNuvem: erro }; erro = null;
             } catch (e2) {
@@ -327,7 +333,8 @@ async function perguntar(conv, texto, { onDelta = () => {}, onPensando = () => {
             }
           }
           if (!feito) { // Plano B fixo: resposta por regras, sem IA e sem custo. Nunca outro serviço pago.
-            resposta = planoBRegras(trechos, erro); onDelta(resposta);
+            resposta = planoBRegras(trechos, erro); onDelta(resposta); // regras locais: podem usar tudo
+            fontes = [...new Set(trechos.map(t => t.nota))];
             dec = { ...dec, rota: 'plano-b-regras', motivo: 'plano-b-nuvem-falhou' }; modelo = 'regras';
           }
         }
